@@ -80,7 +80,9 @@ jobs:
           set -euo pipefail
           base="${{ steps.merge.outputs.upstream_tag }}"
           base="${base#v}"
-          tag="v${base}-screensaver3s.$(date -u +%Y.%m.%d).${GITHUB_RUN_NUMBER}"
+          IFS=. read -r major minor patch <<< "$base"
+          next="${major}.${minor}.$((patch + 1))"
+          tag="v${next}-screensaver3s.$(date -u +%Y.%m.%d).${GITHUB_RUN_NUMBER}"
           if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
             echo "Tag $tag already exists."
             exit 0
