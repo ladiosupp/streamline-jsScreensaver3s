@@ -1685,6 +1685,11 @@ let screensaverClockEl = null;
 let screensaverClockTimeEl = null;
 let screensaverClockDateEl = null;
 let screensaverClockTimer = null;
+let screensaverHoldRing = null;
+let screensaverHoldTimer = null;
+let screensaverHoldPointerId = null;
+let screensaverHoldStartX = 0;
+let screensaverHoldStartY = 0;
 
 // When we last sent a wake ('idle') the machine has not yet confirmed. 0 = none.
 //
@@ -1702,6 +1707,11 @@ const DEFAULT_SCREENSAVER_CYCLE_SECONDS = 10;
 const MIN_SCREENSAVER_CYCLE_SECONDS = 2;
 const MAX_SCREENSAVER_CYCLE_SECONDS = 600;
 const DEFAULT_SCREENSAVER = 'url("src/ui/saver-1.jpg")';
+const SCREENSAVER_HOLD_MS = 3000;
+const SCREENSAVER_HOLD_RING_SIZE = 88;
+const SCREENSAVER_HOLD_RING_RADIUS = 38;
+const SCREENSAVER_HOLD_RING_CIRCUMFERENCE = 2 * Math.PI * SCREENSAVER_HOLD_RING_RADIUS;
+const SCREENSAVER_HOLD_CANCEL_DISTANCE = 28;
 
 function getScreensaverCycleMs() {
     const raw = parseInt(localStorage.getItem('screensaverCycleSeconds'), 10);
@@ -1736,11 +1746,95 @@ function _syncSaverButtonSlot() {
     screensaverButtonSlot.style.display = 'flex';
 }
 
+// The screensaver unlock is a deliberate three-second press: a tap no longer
+// wakes the machine. The ring is drawn at the press point and fills for the
+// hold; releasing early removes it and sends nothing.
+function _removeScreensaverHoldRing() {
+    if (!screensaverHoldRing) return;
+    screensaverHoldRing.remove();
+    screensaverHoldRing = null;
+}
+
+function _cancelScreensaverHold() {
+    if (screensaverHoldTimer) {
+        clearTimeout(screensaverHoldTimer);
+        screensaverHoldTimer = null;
+    }
+    if (screensaverHoldPointerId !== null && screensaverElement?.hasPointerCapture?.(screensaverHoldPointerId)) {
+        try { screensaverElement.releasePointerCapture(screensaverHoldPointerId); } catch (e) { /* pointer already gone */ }
+    }
+    screensaverHoldPointerId = null;
+    screensaverHoldStartX = 0;
+    screensaverHoldStartY = 0;
+    _removeScreensaverHoldRing();
+}
+
+function _showScreensaverHoldRing(x, y) {
+    _removeScreensaverHoldRing();
+    const size = SCREENSAVER_HOLD_RING_SIZE;
+    const radius = SCREENSAVER_HOLD_RING_RADIUS;
+    const circumference = SCREENSAVER_HOLD_RING_CIRCUMFERENCE;
+    const ring = document.createElement('div');
+    ring.id = 'screensaver-hold-ring';
+    ring.setAttribute('aria-hidden', 'true');
+    ring.style.cssText = `position:absolute;left:${x}px;top:${y}px;width:${size}px;height:${size}px;`
+        + 'transform:translate(-50%,-50%);pointer-events:none;z-index:2;';
+    ring.innerHTML = `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">`
+        + `<circle cx="${size / 2}" cy="${size / 2}" r="${radius}" fill="rgba(0,0,0,0.18)" stroke="rgba(255,255,255,0.35)" stroke-width="6"></circle>`
+        + `<circle class="screensaver-hold-progress" cx="${size / 2}" cy="${size / 2}" r="${radius}" fill="none" stroke="#2f80ed" stroke-width="6" stroke-linecap="round" stroke-dasharray="${circumference}" stroke-dashoffset="${circumference}" transform="rotate(-90 ${size / 2} ${size / 2})"></circle>`
+        + '</svg>';
+    screensaverElement.appendChild(ring);
+    screensaverHoldRing = ring;
+    const progress = ring.querySelector('.screensaver-hold-progress');
+    if (!progress) return;
+    progress.style.stroke = 'var(--mimoja-blue-v2, #2f80ed)';
+    // Paint the empty ring first, then let CSS fill it over the hold window.
+    void progress.getBoundingClientRect();
+    progress.style.transition = `stroke-dashoffset ${SCREENSAVER_HOLD_MS}ms linear`;
+    progress.style.strokeDashoffset = '0';
+}
+
+function _onScreensaverPointerDown(event) {
+    if (!screensaverActive || screensaverHoldPointerId !== null) return;
+    if (event.pointerType === 'mouse' && event.button !== 0) return;
+    const onPluginControl = !!event.target?.closest?.('[data-plugin-saver-slot]');
+    if (!mayTapWakeMachine({ screensaverActive, onPluginControl })) return;
+
+    // Keep the long press from selecting text or opening the context menu, and
+    // keep the pointerup coming even if the finger drifts off the overlay.
+    event.preventDefault();
+    screensaverHoldPointerId = event.pointerId;
+    screensaverHoldStartX = event.clientX;
+    screensaverHoldStartY = event.clientY;
+    _showScreensaverHoldRing(event.clientX, event.clientY);
+    try { screensaverElement.setPointerCapture(event.pointerId); } catch (e) { /* older WebView */ }
+
+    screensaverHoldTimer = setTimeout(() => {
+        if (screensaverHoldPointerId !== event.pointerId) return;
+        _cancelScreensaverHold();
+        wakeFromScreensaver();
+    }, SCREENSAVER_HOLD_MS);
+}
+
+function _onScreensaverPointerMove(event) {
+    if (event.pointerId !== screensaverHoldPointerId) return;
+    const dx = event.clientX - screensaverHoldStartX;
+    const dy = event.clientY - screensaverHoldStartY;
+    if (dx * dx + dy * dy > SCREENSAVER_HOLD_CANCEL_DISTANCE * SCREENSAVER_HOLD_CANCEL_DISTANCE) {
+        _cancelScreensaverHold();
+    }
+}
+
+function _onScreensaverPointerUp(event) {
+    if (event.pointerId !== screensaverHoldPointerId) return;
+    _cancelScreensaverHold();
+}
+
 export async function initScreensaver() {
     // Idempotent. This used to be called twice — once from initUI() and again
     // straight from app.js's DOMContentLoaded — and each call built ANOTHER
     // <div id="screensaver">, appended it to <body>, and bound another
-    // click -> wakeFromScreensaver listener. The module only remembers the last
+    // wake listener. The module only remembers the last
     // one, so the earlier node was orphaned: a duplicate id, a live listener on an
     // element nothing can ever show, and a second IndexedDB read of the image list.
     //
@@ -1786,12 +1880,12 @@ export async function initScreensaver() {
     screensaverClockEl.append(screensaverClockTimeEl, screensaverClockDateEl);
     screensaverElement.appendChild(screensaverClockEl);
 
-    // Tapping the overlay is the one place a screensaver interaction may wake the
-    // machine. Bind ONCE: a WebView synthesises `click` from a tap, so binding
-    // `touchstart` as well (as this did) sent 'idle' twice per tap. The
+    // Holding the overlay is the one place a screensaver interaction may wake the
+    // machine. Bind ONCE: pointer capture keeps the release coming, and the
     // !screensaverActive guard inside wakeFromScreensaver() is the backstop.
-    // A plugin's screensaver button is drawn into this slot. Its own handler stops
-    // the click; mayTapWakeMachine() is the second guard, so a tap there never wakes.
+    // A plugin's screensaver button is drawn into this slot. Its own click handler
+    // stops the pointerdown before it starts a hold; mayTapWakeMachine() is the
+    // second guard, so a tap there never wakes.
     screensaverButtonSlot = document.createElement('div');
     screensaverButtonSlot.id = 'screensaver-plugin-slot';
     screensaverButtonSlot.dataset.pluginSaverSlot = '1';
@@ -1799,10 +1893,19 @@ export async function initScreensaver() {
         + 'justify-content:flex-end;padding-right:5%;box-sizing:border-box;pointer-events:none;';
     screensaverElement.appendChild(screensaverButtonSlot);
 
-    screensaverElement.addEventListener('click', event => {
-        const onPluginControl = !!event.target?.closest?.('[data-plugin-saver-slot]');
-        if (mayTapWakeMachine({ screensaverActive, onPluginControl })) wakeFromScreensaver();
-    });
+    // The unlock is a three-second press, not a tap. Pointer capture keeps the
+    // pointerup coming even if the finger drifts off the overlay; a short press
+    // or a drag cancels and sends nothing. The plugin's screensaver button is
+    // excluded, so its own click can open a plugin page without waking.
+    screensaverElement.style.userSelect = 'none';
+    screensaverElement.style.webkitUserSelect = 'none';
+    screensaverElement.style.webkitTouchCallout = 'none';
+    screensaverElement.style.touchAction = 'none';
+    screensaverElement.addEventListener('pointerdown', _onScreensaverPointerDown);
+    screensaverElement.addEventListener('pointermove', _onScreensaverPointerMove);
+    screensaverElement.addEventListener('contextmenu', event => event.preventDefault());
+    window.addEventListener('pointerup', _onScreensaverPointerUp);
+    window.addEventListener('pointercancel', _onScreensaverPointerUp);
 
     document.body.appendChild(screensaverElement);
     document.dispatchEvent(new Event('streamline:screensaverready'));
@@ -1907,11 +2010,12 @@ export function activateScreensaver() {
         console.error('Screensaver element not initialized');
         return;
     }
+    _cancelScreensaverHold();
 
     // Black screen saver: a plain black cover, no image and no cycling. It reuses
-    // this same element deliberately -- the click -> wakeFromScreensaver listener
-    // bound in initScreensaver() is what makes tapping anywhere wake the machine,
-    // exactly as it does for the image saver.
+    // this same element deliberately -- the press-and-hold handler bound in
+    // initScreensaver() is what makes holding anywhere wake the machine, exactly
+    // as it does for the image saver.
     if (isBlackScreenSaver()) {
         screensaverElement.style.backgroundImage = 'none';
         screensaverElement.style.backgroundColor = '#000';
@@ -1955,7 +2059,8 @@ export function activateScreensaver() {
  * overlay calls this; only wakeFromScreensaver() below may command.
  */
 export function hideScreensaver() {
-    if (!screensaverActive) return; // idempotent — also kills the click/touchstart double-fire
+    if (!screensaverActive) return; // idempotent — a second hide is a no-op
+    _cancelScreensaverHold();
     if (screensaverCycleInterval) {
         clearInterval(screensaverCycleInterval);
         screensaverCycleInterval = null;
@@ -1968,10 +2073,10 @@ export function hideScreensaver() {
 }
 
 /**
- * The user tapped the screensaver to wake the machine.
+ * The user held the screensaver for three seconds to wake the machine.
  *
  * The ONLY screensaver path allowed to emit a machine command, and it is bound to
- * exactly one thing: a tap on the overlay itself. The hide is a paint; the wake is
+ * exactly one thing: a completed three-second press on the overlay itself. The hide is a paint; the wake is
  * this explicit, user-initiated command sitting next to it — never inside it.
  */
 export function wakeFromScreensaver() {
