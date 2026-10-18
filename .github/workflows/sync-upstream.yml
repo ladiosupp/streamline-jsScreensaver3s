@@ -1,0 +1,90 @@
+name: Sync upstream
+
+on:
+  schedule:
+    - cron: '23 */6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: npm
+
+      - name: Merge upstream/main and record its latest tag
+        id: merge
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add upstream https://github.com/decentespresso/streamline-js.git 2>/dev/null || true
+          git fetch upstream --tags
+
+          changed=false
+          release=false
+          state=$(sed -n 's/^last_upstream_tag=//p' .sync-state 2>/dev/null | head -n1 || true)
+          latest=$(git describe --tags --abbrev=0 upstream/main 2>/dev/null || true)
+
+          if ! git merge-base --is-ancestor upstream/main HEAD; then
+            if ! git merge --no-edit upstream/main; then
+              git merge --abort || true
+              echo "::error::Upstream merge conflicted; resolve it manually."
+              exit 1
+            fi
+            changed=true
+          fi
+
+          if [ -n "$latest" ] && [ "$latest" != "$state" ]; then
+            printf 'last_upstream_tag=%s\n' "$latest" > .sync-state
+            git add .sync-state
+            git commit -m "Record upstream $latest"
+            changed=true
+            release=true
+          fi
+
+          echo "changed=$changed" >> "$GITHUB_OUTPUT"
+          echo "release=$release" >> "$GITHUB_OUTPUT"
+          echo "upstream_tag=$latest" >> "$GITHUB_OUTPUT"
+
+      - name: Install and test
+        if: steps.merge.outputs.changed == 'true'
+        run: |
+          set -euo pipefail
+          npm ci --no-audit --no-fund
+          npm test
+
+      - name: Push merged main
+        if: steps.merge.outputs.changed == 'true'
+        run: git push origin HEAD:main
+
+      - name: Tag a release for a new upstream tag
+        if: steps.merge.outputs.release == 'true'
+        run: |
+          set -euo pipefail
+          base="${{ steps.merge.outputs.upstream_tag }}"
+          base="${base#v}"
+          tag="v${base}-screensaver3s.$(date -u +%Y.%m.%d).${GITHUB_RUN_NUMBER}"
+          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
+            echo "Tag $tag already exists."
+            exit 0
+          fi
+          git tag "$tag"
+          git push origin "$tag"
+          echo "Tagged $tag for upstream ${{ steps.merge.outputs.upstream_tag }}"
