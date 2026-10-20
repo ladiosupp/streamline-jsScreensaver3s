@@ -22,12 +22,12 @@
 import { API_BASE_URL, getWorkflow, updateWorkflow, getDye2KvArray, setDye2KvArray, getKVValue, DYE2_KV_NAMESPACE, onWorkflowUpdated, getPlugins, installPluginFromRelease, enablePlugin, checkPluginUpdates, approvePluginUpdate, persistSharedValue, FLUSH_DURATION_LAST_VALUE_KEY, HOT_WATER_VOLUME_LAST_VALUE_KEY, HOT_WATER_TEMP_LAST_VALUE_KEY, STEAM_DURATION_LAST_VALUE_KEY, STEAM_FLOW_LAST_VALUE_KEY, getProfiles } from './api.js';
 import { applyWorkflowToMainPageUI } from './profileManager.js';
 import { logger } from './logger.js';
-import { fitTextToBox } from './i18n.js';
+import { fitTextToBox, getTranslation } from './i18n.js';
 import { stripRightInset } from './header-strip-inset.js';
 import { openContextMenu } from './context-menu.js';
-import { setupPressAndHold, setSteamTileModeIfSafe, setHotWaterTileMode } from './ui.js';
+import { setupPressAndHold, setSteamTileModeIfSafe, setHotWaterTileMode, showToast } from './ui.js';
 import { DYE_MARKER_VERSION, scopedClearContext, hasDyeMarker, skinBeanClearContext, mergeClearContext } from './dye-context.js';
-import { SELECTION_KEY, RETURN_PARAM, profileFingerprint, profileDrifted, serializeSelection, resolveReturn, parseDyeReturn, changedFields, pluginRecordsDialIn, armedSelectionId, emptyRecipeSlots } from './dye-selection.js';
+import { SELECTION_KEY, RETURN_PARAM, profileFingerprint, profileDrifted, serializeSelection, resolveReturn, parseDyeReturn, changedFields, pluginRecordsDialIn, armedSelectionId, recipeStripCells, favStripCells } from './dye-selection.js';
 
 const AF_KEY = 'autoFavourites';
 const RECIPES_KEY = 'recipes';
@@ -89,24 +89,6 @@ export async function loadDyeStripData() {
     logger.info(`dyeStrip: loaded ${favCache.length} favs, ${recipeCache.length} recipes${dye2RecordsDialIn ? ' (DYE2 records dial-in)' : ''}`);
 }
 
-function visibleFavs() {
-    return favCache
-        .filter(f => f && f.alwaysOnDashboard !== false)
-        .sort((a, b) => {
-            const sa = a.favSlot ?? Infinity, sb = b.favSlot ?? Infinity;
-            if (sa !== sb) return sa - sb;
-            return String(a.capturedAt || '').localeCompare(String(b.capturedAt || ''));
-        })
-        .slice(0, MAX_FAV_CELLS);
-}
-
-// Mirrors visibleFavs: DYE2's recipe editor has a "Show on Streamline Dashboard" toggle
-// that writes showOnStreamlineDashboard, so honour it here the same way alwaysOnDashboard
-// is honoured for favourites. Absent ⇒ shown (see dye2-plugin/KV_CONTRACT.md).
-function visibleRecipes() {
-    return recipeCache.filter(r => r && r.showOnStreamlineDashboard !== false);
-}
-
 function favLabel(fav) {
     const snp = fav.snapshot || {};
     // User-typed title wins: DYE2 always fills subtitle (roaster / coffee name), so a
@@ -134,14 +116,77 @@ function makeCell(label, extraClass, onClick, onLongPress) {
     return btn;
 }
 
-// Long-press menu on an R / F cell: jump into DYE2's editor, or (selected cell only)
-// stop DYE2 recording dashboard changes onto its selection, for a one-off change.
-// Clear is on every cell: the highlight can lag DYE2's real selection.
-function openCellMenu(btn, edit) {
+// Long-press menu on an R / F cell: jump into DYE2's editor, save the dial-in made since the
+// item was applied onto it, or free the button.
+//
+// Saving is explicit. DYE2 used to write every workflow change onto whatever was selected,
+// which meant the machine's state quietly became the recipe -- steam switched off, a one-off
+// dose, a stale value from another app. Applying an item now only selects it; the barista
+// decides when it becomes the recipe. Offered on the selected cell only: DYE2 records onto its
+// own selection, so on any other cell it would write to the wrong item.
+function openCellMenu(btn, edit, kind, item) {
+    // Only against a DYE2 that records dial-in, and only when no legacy auto-save item is
+    // armed (a non-null activeItem means the skin is recording and DYE2's selection may differ).
+    const selected = item.id != null && item.id === activeItemId && dye2RecordsDialIn && !activeItem;
     openContextMenu(btn, [
-        { label: 'Edit in DYE2', onSelect: edit },
-        { label: 'Clear selection', onSelect: clearSelection },
+        { label: getTranslation('Edit in DYE2'), onSelect: edit },
+        ...(selected ? [{ label: getTranslation('Save changes'), onSelect: () => saveChanges(kind, item) }] : []),
+        { divider: true },
+        { label: getTranslation('Clear button'), danger: true, onSelect: () => clearCell(kind, item) },
     ]);
+}
+
+// Ask DYE2 to patch the selected item with the dial-in now on the machine. DYE2 owns the diff
+// (it knows what the item held when it was applied), so this just asks; it answers saved:false
+// when nothing actually moved.
+async function saveChanges(kind, item, retried = false) {
+    const label = kind === 'recipe' ? recipeLabel(item) : favLabel(item);
+    try {
+        const res = await fetch(`${PLUGIN_BASE}/record`, { method: 'POST' });
+        if (res.status === 404) { // an older DYE2 (< v0.1.23) has no such endpoint
+            if (!retried && await updateDye2Now()) return saveChanges(kind, item, true);
+            showToast('Update DYE2 to save changes', 2400, 'info');
+            return;
+        }
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const body = await res.json().catch(() => null);
+        if (body && body.saved) {
+            // The caches still hold the pre-save values; reapplying a cell would use them.
+            await loadDyeStripData().catch(e => logger.warn('dyeStrip: reload after save failed', e));
+            if (currentMode !== 'P') renderStrip(currentMode);
+            showToast(`${label} updated`, 2000, 'info');
+        } else {
+            showToast('No changes to save', 2000, 'info');
+        }
+    } catch (e) {
+        logger.error('dyeStrip: save changes failed', e);
+        showToast(`Could not save to ${label}`, 2400, 'error');
+    }
+}
+
+// Take the item off its strip button, the way the profile strip's own "Clear button" frees a
+// favourite slot. DYE2 owns the flag -- showOnStreamlineDashboard for a recipe,
+// alwaysOnDashboard for a favourite -- and both default to shown when absent, so clearing
+// means writing false rather than deleting anything. The item itself is untouched: it stays in
+// DYE2 and can be put back from its editor.
+async function clearCell(kind, item) {
+    const label = kind === 'recipe' ? recipeLabel(item) : favLabel(item);
+    const field = kind === 'recipe' ? 'showOnStreamlineDashboard' : 'alwaysOnDashboard';
+    try {
+        if (!(await saveItemTopLevel(kind, item.id, { [field]: false }))) {
+            showToast(`${label} is no longer in DYE2`, 2000, 'info');
+            return;
+        }
+    } catch (e) {
+        logger.error('dyeStrip: clear button failed', e);
+        showToast(`Could not clear ${label}`, 2400, 'error');
+        return;
+    }
+    // An item that is no longer on the strip must not stay armed for dial-in recording.
+    // clearSelection re-renders for us; otherwise do it here.
+    if (item.id != null && item.id === activeItemId) clearSelection();
+    else if (currentMode !== 'P') renderStrip(currentMode);
+    showToast(`${label} cleared`, 2000, 'info');
 }
 
 function clearSelection() {
@@ -160,19 +205,24 @@ export function renderStrip(mode) {
     strip.innerHTML = '';
 
     if (mode === 'F') {
-        const favs = visibleFavs();
-        favs.forEach(fav => {
+        // Fixed positions, like the profile strip: a cleared favourite leaves a blank cell
+        // in place instead of shifting the rest left. A tap on the blank opens the DYE2 list.
+        favStripCells(favCache, MAX_FAV_CELLS).forEach(({ fav }) => {
+            if (!fav) {
+                strip.appendChild(makeCell('', CELL_IDLE, () => openPluginOverlay('auto-favs')));
+                return;
+            }
             const active = fav.id != null && fav.id === activeItemId;
             const cell = makeCell(favLabel(fav), active ? CELL_ACTIVE : CELL_IDLE, () => {
                 activeItemId = fav.id;
                 renderStrip('F');
                 applyFavourite(fav).catch(e => logger.error('applyFavourite failed', e));
-            }, btn => openCellMenu(btn, () => editFavourite(fav)));
+            }, btn => openCellMenu(btn, () => editFavourite(fav), 'favourite', fav));
             strip.appendChild(cell);
         });
         // Trailing "VIEW ALL AUTO FAV" cell (always present, opens the DYE2 page).
         strip.appendChild(makeCell('VIEW ALL AUTO FAV', CELL_ACCENT, () => openPluginOverlay('auto-favs')));
-        if (favs.length === 0) {
+        if (!favCache.some(Boolean)) {
             // Nothing captured yet — a soft hint before the VIEW ALL cell.
             const hint = document.createElement('span');
             hint.className = HINT_CLASS;
@@ -180,19 +230,20 @@ export function renderStrip(mode) {
             strip.insertBefore(hint, strip.firstChild);
         }
     } else if (mode === 'R') {
-        const recipes = visibleRecipes().slice(0, 5);
-        recipes.forEach(recipe => {
+        // Recipe ids are fixed slots: a recipe sits at its own id, a cleared one leaves a
+        // blank in place, and a tap on a blank opens DYE2's editor on that slot.
+        recipeStripCells(recipeCache).forEach(({ slot, recipe }) => {
+            if (!recipe) {
+                strip.appendChild(makeCell('', CELL_IDLE, () => editRecipe({ id: slot })));
+                return;
+            }
             const active = recipe.id != null && recipe.id === activeItemId;
             const cell = makeCell(recipeLabel(recipe), active ? CELL_ACTIVE : CELL_IDLE, () => {
                 activeItemId = recipe.id;
                 renderStrip('R');
                 applyRecipe(recipe).catch(e => logger.error('applyRecipe failed', e));
-            }, btn => openCellMenu(btn, () => editRecipe(recipe)));
+            }, btn => openCellMenu(btn, () => editRecipe(recipe), 'recipe', recipe));
             strip.appendChild(cell);
-        });
-        // Empty slots: one tap opens DYE2's editor on that slot to create a recipe.
-        emptyRecipeSlots(recipeCache).slice(0, 5 - recipes.length).forEach(slot => {
-            strip.appendChild(makeCell('', CELL_IDLE, () => editRecipe({ id: slot })));
         });
     }
     // Fit only once attached: wrapping depends on the real box width, which an
@@ -597,7 +648,7 @@ function closePluginOverlay(refresh) {
 // does the equivalent by setting this same sessionStorage key before navigating
 // (see recipe-edit.ts's `dye_editRecipeIdx` read); recipe ids are the fixed
 // slots '1'..'5', which is what makes id-1 the reliable index here rather than
-// the filtered/sorted position of the cell in visibleRecipes(). Same-origin
+// the position of the cell in the strip. Same-origin
 // only: in the cross-origin dev fallback (see isSameOrigin above) the iframe
 // path is skipped entirely and this sessionStorage key lives on a different
 // origin than the recipe-edit page, so it lands on recipe 1 there -- a dev-only
@@ -820,6 +871,19 @@ export async function offerDye2Update() {
     if (after.installed && after.installed !== before.installed) return true;
     if (after.pending) return promptPluginUpdate(after);
     return false;
+}
+
+// Force an update check now (no cooldown: the user just hit a feature the installed copy lacks).
+// Decaid installs a no-new-permission update inside the check; one asking for more permissions
+// still goes through the consent dialog. Resolves true if DYE2 ended up on a new version.
+async function updateDye2Now() {
+    const before = await getDye2VersionInfo();
+    if (!before.reachable || !before.source) return false;
+    showToast('Updating DYE2…', 2000, 'info');
+    await checkPluginUpdates().catch(e => logger.info(`dyeStrip: update check failed (${e.message || e})`));
+    const after = await getDye2VersionInfo();
+    if (after.installed && after.installed !== before.installed) return true;
+    return after.pending ? promptPluginUpdate(after) : false;
 }
 
 // Resolves true if the update was installed. The added permissions are listed
@@ -1340,6 +1404,22 @@ async function saveItemFields(kind, id, fields) {
     await setDye2KvArray(target.key, next);
     if (kind === 'recipe') recipeCache = next; else favCache = next; // keep the strip's own cache in step
     logger.info(`dyeStrip: auto-saved to ${kind} ${id}: ${Object.keys(fields).join(', ')}`);
+}
+
+// saveItemFields' sibling for the item's own top-level fields: the strip-visibility flags live
+// there, not inside snapshot / dashboardVariables. Same read-modify-write, same reason.
+// Returns false when the item has gone from DYE2 since the strip read it.
+async function saveItemTopLevel(kind, id, fields) {
+    const key = kind === 'recipe' ? RECIPES_KEY : AF_KEY;
+    const list = await getDye2KvArray(key);
+    const idx = list.findIndex(r => r && String(r.id) === String(id));
+    if (idx === -1) return false;
+    const next = list.slice();
+    next[idx] = { ...next[idx], ...fields };
+    await setDye2KvArray(key, next);
+    if (kind === 'recipe') recipeCache = next; else favCache = next; // keep the strip's cache in step
+    logger.info(`dyeStrip: cleared ${kind} ${id} off the strip`);
+    return true;
 }
 
 // Strip DYE2's return param: one-shot, a reload must not replay it. A DYE2 that
