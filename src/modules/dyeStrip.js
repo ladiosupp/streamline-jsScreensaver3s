@@ -24,9 +24,10 @@ import { applyWorkflowToMainPageUI } from './profileManager.js';
 import { logger } from './logger.js';
 import { fitTextToBox } from './i18n.js';
 import { stripRightInset } from './header-strip-inset.js';
+import { openContextMenu } from './context-menu.js';
 import { setupPressAndHold, setSteamTileModeIfSafe, setHotWaterTileMode } from './ui.js';
 import { DYE_MARKER_VERSION, scopedClearContext, hasDyeMarker, skinBeanClearContext, mergeClearContext } from './dye-context.js';
-import { SELECTION_KEY, RETURN_PARAM, profileFingerprint, profileDrifted, serializeSelection, resolveReturn, parseDyeReturn, changedFields, pluginRecordsDialIn, armedSelectionId } from './dye-selection.js';
+import { SELECTION_KEY, RETURN_PARAM, profileFingerprint, profileDrifted, serializeSelection, resolveReturn, parseDyeReturn, changedFields, pluginRecordsDialIn, armedSelectionId, emptyRecipeSlots } from './dye-selection.js';
 
 const AF_KEY = 'autoFavourites';
 const RECIPES_KEY = 'recipes';
@@ -125,12 +126,32 @@ function makeCell(label, extraClass, onClick, onLongPress) {
     btn.className = CELL_BASE + extraClass;
     btn.textContent = label;
     if (onLongPress) {
-        btn.title = 'Long-press to edit in DYE2';
-        setupPressAndHold(btn, onClick || (() => {}), onLongPress);
+        btn.title = 'Long-press for options';
+        setupPressAndHold(btn, onClick || (() => {}), () => onLongPress(btn));
     } else if (onClick) {
         btn.addEventListener('click', onClick);
     }
     return btn;
+}
+
+// Long-press menu on an R / F cell: jump into DYE2's editor, or (selected cell only)
+// stop DYE2 recording dashboard changes onto its selection, for a one-off change.
+// Clear is on every cell: the highlight can lag DYE2's real selection.
+function openCellMenu(btn, edit) {
+    openContextMenu(btn, [
+        { label: 'Edit in DYE2', onSelect: edit },
+        { label: 'Clear selection', onSelect: clearSelection },
+    ]);
+}
+
+function clearSelection() {
+    applySeq++; // stop an arm still retrying in the background
+    activeItemId = null;
+    clearActiveItem();
+    forgetParkedSelection();
+    if (dye2Armed || dye2RecordsDialIn) postSelection('', null).catch(() => {});
+    dye2Armed = false;
+    if (currentMode !== 'P') renderStrip(currentMode);
 }
 
 export function renderStrip(mode) {
@@ -146,7 +167,7 @@ export function renderStrip(mode) {
                 activeItemId = fav.id;
                 renderStrip('F');
                 applyFavourite(fav).catch(e => logger.error('applyFavourite failed', e));
-            }, () => editFavourite(fav));
+            }, btn => openCellMenu(btn, () => editFavourite(fav)));
             strip.appendChild(cell);
         });
         // Trailing "VIEW ALL AUTO FAV" cell (always present, opens the DYE2 page).
@@ -160,20 +181,18 @@ export function renderStrip(mode) {
         }
     } else if (mode === 'R') {
         const recipes = visibleRecipes().slice(0, 5);
-        if (recipes.length === 0) {
-            const hint = document.createElement('span');
-            hint.className = HINT_CLASS;
-            hint.textContent = 'No recipes yet';
-            strip.appendChild(hint);
-        }
         recipes.forEach(recipe => {
             const active = recipe.id != null && recipe.id === activeItemId;
             const cell = makeCell(recipeLabel(recipe), active ? CELL_ACTIVE : CELL_IDLE, () => {
                 activeItemId = recipe.id;
                 renderStrip('R');
                 applyRecipe(recipe).catch(e => logger.error('applyRecipe failed', e));
-            }, () => editRecipe(recipe));
+            }, btn => openCellMenu(btn, () => editRecipe(recipe)));
             strip.appendChild(cell);
+        });
+        // Empty slots: one tap opens DYE2's editor on that slot to create a recipe.
+        emptyRecipeSlots(recipeCache).slice(0, 5 - recipes.length).forEach(slot => {
+            strip.appendChild(makeCell('', CELL_IDLE, () => editRecipe({ id: slot })));
         });
     }
     // Fit only once attached: wrapping depends on the real box width, which an
@@ -956,7 +975,19 @@ function wireOnce() {
     // DYE2 made while Streamline was idle appear (KV_CONTRACT "Freshness").
     const repoll = () => {
         if (document.hidden || !isDye2Enabled()) return;
-        loadDyeStripData().then(() => { if (currentMode !== 'P') renderStrip(currentMode); }).catch(() => {});
+        loadDyeStripData().then(async () => {
+            // DYE2 owns the arming: a selection cleared or changed inside it while this
+            // page sat idle must not leave a stale highlight. Only when nothing is
+            // armed here, and never over a tap that landed during the GET.
+            if (dye2RecordsDialIn && !activeItem) {
+                const before = activeItemId;
+                const seq = applySeq;
+                const sel = await getKVValue(DYE2_KV_NAMESPACE, 'selection').catch(() => undefined);
+                if (sel === undefined || activeItemId !== before || applySeq !== seq) return;
+                activeItemId = armedSelectionId(sel, { recipes: recipeCache, favs: favCache });
+            }
+            if (currentMode !== 'P') renderStrip(currentMode);
+        }).catch(() => {});
     };
     window.addEventListener('focus', repoll);
     // A plugin said the workflow changed (DYE2 may have written it). Leading call

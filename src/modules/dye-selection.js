@@ -22,7 +22,11 @@ export const SELECTION_KEY = 'streamline.dyeSelection';
 export function profileFingerprint(profile) {
     if (!profile) return null;
     const steps = Array.isArray(profile.steps)
-        ? profile.steps.map(({ temperature, ...rest }) => rest)
+        ? profile.steps.map(({ temperature, limiter, ...rest }) => ({
+            ...rest,
+            // {value:0}, null and absent all mean "no limiter"; Decaid reports them interchangeably.
+            limiter: (limiter && Number(limiter.value) !== 0) ? limiter : null,
+        }))
         : profile.steps;
     return JSON.stringify({
         title: profile.title,
@@ -163,4 +167,27 @@ export function armedSelectionId(sel, { recipes, favs }) {
     if (!Array.isArray(list)) return null;
     const found = list.find(x => x && String(x.id) === String(sel.id));
     return found ? found.id : null;
+}
+
+/**
+ * The steam temperature the selected DYE2 recipe wants, or null. Used when steam
+ * is re-armed from off so the recipe's temperature wins over the remembered one.
+ * Below 135C the machine treats the target as off, so such values are ignored.
+ */
+export function selectedRecipeSteamTemp(sel, recipes) {
+    if (!sel || sel.kind !== 'recipe' || sel.id == null || !Array.isArray(recipes)) return null;
+    const recipe = recipes.find(r => r && String(r.id) === String(sel.id));
+    const t = Number(recipe?.dashboardVariables?.steamTempC);
+    return Number.isFinite(t) && t >= 135 ? Math.round(t) : null;
+}
+
+/**
+ * Recipe slots ('1'..'5', DYE2 KV_CONTRACT) that hold no recipe at all, lowest first.
+ * The strip shows one empty cell per slot so a tap opens DYE2's editor on it.
+ */
+export function emptyRecipeSlots(recipes, count = 5) {
+    const used = new Set((Array.isArray(recipes) ? recipes : []).filter(Boolean).map(r => String(r.id)));
+    const out = [];
+    for (let i = 1; i <= count; i++) if (!used.has(String(i))) out.push(String(i));
+    return out;
 }

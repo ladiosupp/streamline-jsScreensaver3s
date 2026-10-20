@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
     profileFingerprint, profileDrifted, serializeSelection, restoreSelection,
-    parseDyeReturn, resolveReturn, changedFields, pluginRecordsDialIn, armedSelectionId,
+    parseDyeReturn, resolveReturn, changedFields, pluginRecordsDialIn, armedSelectionId, selectedRecipeSteamTemp, emptyRecipeSlots,
 } from '../src/modules/dye-selection.js';
 
 const profile = { title: 'Londinium', target_weight: 36, steps: [{ name: 'fill', temperature: 90 }, { name: 'pour', temperature: 92 }] };
@@ -103,6 +103,13 @@ test('scopedClearContext: only flagged, only present, flags go with the values',
     assert.deepEqual(scopedClearContext({ profile: 'p', extras: { dye: { v: 1, profile: true } } }), { extras: { dye: { profile: null } } });
 });
 
+test('scopedClearContext: a flagged grinder keeps its value, only the flag is cleared', () => {
+    assert.deepEqual(
+        scopedClearContext({ grinderId: 'g1', grinderModel: 'EG-1', coffeeName: 'x', extras: { dye: { v: 1, grinderId: true, grinderModel: true, coffeeName: true } } }),
+        { coffeeName: null, extras: { dye: { grinderId: null, grinderModel: null, coffeeName: null } } },
+    );
+});
+
 test('pluginRecordsDialIn: only a loaded DYE2 that declares the selection endpoint', () => {
     const api = [{ type: 'http', id: 'dashboard' }, { type: 'http', id: 'selection' }, { type: 'websocket', id: 'changed' }];
     assert.equal(pluginRecordsDialIn([{ id: 'dye2.reaplugin', loaded: true, api }]), true);
@@ -129,4 +136,40 @@ test('armedSelectionId: the cached item own id, or null when it is gone', () => 
     assert.equal(armedSelectionId(null, lists), null);
     assert.equal(armedSelectionId({ kind: 'recipe' }, lists), null);
     assert.equal(armedSelectionId({ kind: 'recipe', id: '2' }, { recipes: undefined, favs: [] }), null);
+});
+
+test('profileFingerprint: limiter {value:0}, null and absent hash the same; a real limit differs', () => {
+    const withLimiter = limiter => ({ ...profile, steps: [{ name: 'fill', temperature: 90, ...(limiter === undefined ? {} : { limiter }) }] });
+    const missing = profileFingerprint(withLimiter(undefined));
+    assert.equal(profileFingerprint(withLimiter({ value: 0, range: 0.6 })), missing);
+    assert.equal(profileFingerprint(withLimiter(null)), missing);
+    assert.notEqual(profileFingerprint(withLimiter({ value: 1.5, range: 0.6 })), missing);
+});
+
+test('profileDrifted: an item fingerprinted with a 0 limiter does not drift against a null limiter', () => {
+    const zero = { ...profile, steps: [{ name: 'fill', limiter: { value: 0, range: 0.6 } }] };
+    const none = { ...profile, steps: [{ name: 'fill', limiter: null }] };
+    assert.equal(profileDrifted({ profileFingerprint: profileFingerprint(zero) }, { profile: none }), false);
+});
+
+test('armedSelectionId: an empty selection object arms nothing', () => {
+    assert.equal(armedSelectionId({}, { recipes: [{ id: '1' }], favs: [{ id: 7 }] }), null);
+});
+
+test('selectedRecipeSteamTemp: the selected recipe steam temperature, or null', () => {
+    const recipes = [{ id: '2', dashboardVariables: { steamTempC: 140.4 } }, { id: '3', dashboardVariables: { steamTempC: 0 } }, { id: '4' }];
+    assert.equal(selectedRecipeSteamTemp({ kind: 'recipe', id: 2 }, recipes), 140);
+    assert.equal(selectedRecipeSteamTemp({ kind: 'recipe', id: '3' }, recipes), null, 'below 135 is off, not a temperature');
+    assert.equal(selectedRecipeSteamTemp({ kind: 'recipe', id: '4' }, recipes), null);
+    assert.equal(selectedRecipeSteamTemp({ kind: 'recipe', id: '9' }, recipes), null);
+    assert.equal(selectedRecipeSteamTemp({ kind: 'favourite', id: '2' }, recipes), null);
+    assert.equal(selectedRecipeSteamTemp(null, recipes), null);
+    assert.equal(selectedRecipeSteamTemp({ kind: 'recipe', id: '2' }, null), null);
+});
+
+test('emptyRecipeSlots lists the unused slots 1..5', () => {
+    assert.deepEqual(emptyRecipeSlots([]), ['1', '2', '3', '4', '5']);
+    assert.deepEqual(emptyRecipeSlots(null), ['1', '2', '3', '4', '5']);
+    assert.deepEqual(emptyRecipeSlots([{ id: '1' }, { id: 3 }]), ['2', '4', '5']);
+    assert.deepEqual(emptyRecipeSlots([1, 2, 3, 4, 5].map(id => ({ id }))), []);
 });
