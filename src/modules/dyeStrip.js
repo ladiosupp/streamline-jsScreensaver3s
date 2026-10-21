@@ -27,7 +27,7 @@ import { stripRightInset } from './header-strip-inset.js';
 import { openContextMenu } from './context-menu.js';
 import { setupPressAndHold, setSteamTileModeIfSafe, setHotWaterTileMode, showToast } from './ui.js';
 import { DYE_MARKER_VERSION, scopedClearContext, hasDyeMarker, skinBeanClearContext, mergeClearContext } from './dye-context.js';
-import { SELECTION_KEY, RETURN_PARAM, profileFingerprint, profileDrifted, serializeSelection, resolveReturn, parseDyeReturn, changedFields, pluginRecordsDialIn, armedSelectionId, recipeStripCells, favStripCells } from './dye-selection.js';
+import { SELECTION_KEY, RETURN_PARAM, profileFingerprint, profileDrifted, serializeSelection, resolveReturn, parseDyeReturn, changedFields, pluginRecordsDialIn, keepPreviousOnFailure, resolveRecordsDialIn, armedSelectionId, recipeStripCells, favStripCells } from './dye-selection.js';
 
 const AF_KEY = 'autoFavourites';
 const RECIPES_KEY = 'recipes';
@@ -80,12 +80,14 @@ export async function loadDyeStripData() {
         getDye2KvArray(RECIPES_KEY),
         getPlugins().catch(() => null),
     ]);
-    favCache = Array.isArray(favs) ? favs : [];
-    recipeCache = Array.isArray(recipes) ? recipes : [];
-    // An unreachable bridge reads as "does not record", so the fallback auto-save
-    // stays on: writing the same values twice is recoverable, writing them nowhere
-    // is not.
-    dye2RecordsDialIn = pluginRecordsDialIn(plugins, PLUGIN_ID);
+    // A failed read (null) keeps the previous cache: a transient error must not
+    // empty the strip or flip the recording mode mid-session.
+    favCache = keepPreviousOnFailure(favCache, favs);
+    recipeCache = keepPreviousOnFailure(recipeCache, recipes);
+    // First load with an unreachable bridge reads as "does not record" (the
+    // initial false), so the fallback auto-save stays on: writing the same values
+    // twice is recoverable, writing them nowhere is not.
+    dye2RecordsDialIn = resolveRecordsDialIn(dye2RecordsDialIn, plugins, p => pluginRecordsDialIn(p, PLUGIN_ID));
     logger.info(`dyeStrip: loaded ${favCache.length} favs, ${recipeCache.length} recipes${dye2RecordsDialIn ? ' (DYE2 records dial-in)' : ''}`);
 }
 
@@ -950,10 +952,10 @@ export function setStripMode(mode) {
         const pill = document.getElementById(`dye-toggle-${m}`);
         if (!pill) return;
         const active = m === mode;
-        pill.classList.toggle('bg-[var(--mimoja-blue-v2)]', active);
+        pill.classList.toggle('bg-[var(--button-primary-bg)]', active);
         pill.classList.toggle('text-[var(--button-primary-text)]', active);
-        pill.classList.toggle('text-[var(--mimoja-blue-v2)]', !active);
-        pill.classList.toggle('bg-[var(--box-color)]', !active);
+        pill.classList.toggle('text-[var(--tab-text-inactive)]', !active);
+        pill.classList.toggle('bg-[var(--dye-toggle-inactive-bg)]', !active);
     });
 
     // Visibility via inline display (a Tailwind `flex` utility overrides [hidden]).
@@ -1069,10 +1071,9 @@ function wireOnce() {
     // openPluginOverlay); returning via the browser Back button restores this page
     // from bfcache — a frozen pre-edit snapshot that fires `pageshow` (persisted),
     // not focus/visibilitychange. Mirrors profile_selector.js's plugin-return guard.
-    // getDye2KvArray coerces a fetch error to [] (its own bridge-quirk handling), so
-    // a transient failure isn't visible as a rejection here — a fetch fired right as
-    // the browser wakes the network stack back up from bfcache can intermittently
-    // fail and get read as "no favourites". Retry once shortly after to cover that.
+    // A fetch fired right as the browser wakes the network stack back up from
+    // bfcache can intermittently fail (getDye2KvArray -> null, caches kept).
+    // Retry once shortly after to cover that.
     // bfcache restore also means this page never reloaded, so a selection parked
     // for the trip is stale: it would re-arm over whatever is chosen next.
     window.addEventListener('pageshow', (e) => {
@@ -1292,13 +1293,31 @@ const AUTOSAVE_TARGETS = {
 };
 
 let activeItem = null; // { kind: 'recipe'|'favourite', id, profileId } from the apply that made it active
-let autoSaveSuppressed = false;
+let autoSaveSuppressDepth = 0; // overlapping applies: suppression holds until the LAST one finishes
 let autoSaveTimer = null;
 let autoSavePending = {}; // accumulated patch, flushed on the timer
 
 async function withAutoSaveSuppressed(fn) {
-    autoSaveSuppressed = true;
-    try { return await fn(); } finally { autoSaveSuppressed = false; }
+    // The apply's own workflowUpdated echo must never be auto-saved, and neither may an
+    // echo that lands while an earlier apply is still unwinding: drop the previous active
+    // item up front so nothing can be written onto it (activeItemId, the highlight, stays).
+    // A debounced dial-in edit still waiting on the timer belongs to that previous item, so
+    // write it there first rather than discarding it.
+    flushPendingAutoSave();
+    clearActiveItem();
+    autoSaveSuppressDepth++;
+    try { return await fn(); } finally { autoSaveSuppressDepth--; }
+}
+
+function flushPendingAutoSave() {
+    if (autoSaveTimer === null || !activeItem) return;
+    const { kind, id } = activeItem;
+    const fields = autoSavePending;
+    clearTimeout(autoSaveTimer);
+    autoSaveTimer = null;
+    autoSavePending = {};
+    if (Object.keys(fields).length === 0) return;
+    saveItemFields(kind, id, fields).catch(e => logger.error(`dyeStrip: ${kind} auto-save failed`, e));
 }
 
 function forgetParkedSelection() {
@@ -1372,7 +1391,7 @@ function handleWorkflowUpdatedForAutoSave(workflow, dataToSend) {
     // same array, and it is the one that owns the schema. (activeItem is never set in
     // that mode either — this is belt and braces, and documents why.)
     if (dye2Armed) return;
-    if (autoSaveSuppressed || !activeItem || !isDye2Enabled()) return;
+    if (autoSaveSuppressDepth > 0 || !activeItem || !isDye2Enabled()) return;
     if (profileDrifted(activeItem, workflow)) {
         clearActiveItem();
         return;
@@ -1397,6 +1416,7 @@ function handleWorkflowUpdatedForAutoSave(workflow, dataToSend) {
 async function saveItemFields(kind, id, fields) {
     const target = AUTOSAVE_TARGETS[kind];
     const list = await getDye2KvArray(target.key);
+    if (!list) return; // read failed -- never write back over data we could not see
     const idx = list.findIndex(r => r && String(r.id) === String(id));
     if (idx === -1) return; // deleted or renumbered since — nothing to save onto
     const next = list.slice();
@@ -1412,6 +1432,7 @@ async function saveItemFields(kind, id, fields) {
 async function saveItemTopLevel(kind, id, fields) {
     const key = kind === 'recipe' ? RECIPES_KEY : AF_KEY;
     const list = await getDye2KvArray(key);
+    if (!list) throw new Error('DYE2 read failed'); // never write back over data we could not see
     const idx = list.findIndex(r => r && String(r.id) === String(id));
     if (idx === -1) return false;
     const next = list.slice();

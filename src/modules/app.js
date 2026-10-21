@@ -7,6 +7,7 @@ import { initI18n, getTranslation, fitTelemetry } from './i18n.js';
 import { settingsReady } from './settingsSync.js';
 import { initUnits, formatTemp, fromDisplayTemp } from './units.js';
 import * as history from './history.js';
+import { shouldReloadForLatestShot } from './history-pager.js';
 import * as shotData from './shotData.js';
 import * as profileManager from './profileManager.js';
 import * as api from './api.js';
@@ -21,7 +22,7 @@ import { setMachineModel, isBengleMachine, setRefillKitPresent, isRefillKitPrese
 import { classifyStopReason, canonicalStopReason, STOP_TARGET_WEIGHT, STOP_TARGET_VOLUME, STOP_PROFILE_ENDED } from './stop-reason.js';
 import { resolveMilkProbePresence, MILK_PROBE_ABSENT_AFTER_MS, selectMilkProbeSensorId } from './steam-mode.js';
 import { readTimeToReadyFrame, heatingSecondsLeft } from './heating-countdown.js';
-import { workflowTileValues, tilesToPaint } from './workflow-watch.js';
+import { workflowTileValues, tilesToPaint, profileChanged, WORKFLOW_EDIT_GUARD_MS } from './workflow-watch.js';
 import { isCupWarmerOn, readCupWarmerTarget, resolvePrewarm, getCupWarmerState, setCupWarmerState, patchCupWarmerState, invalidateCupWarmerState, onCupWarmerStateChange, CUP_WARMER_TARGET_KEY } from './cup-warmer.js';
 import { openDB, setSetting } from './idb.js';
 import { openContextMenu } from './context-menu.js';
@@ -521,6 +522,38 @@ function handleDeviceConnectionError(err) {
 function onMachineSnapshotSocketOpen() {
     logger.info('Machine snapshot WebSocket (re)opened. Awaiting a frame to confirm the machine.');
     isDe1Connected = false; // the first frame re-confirms it (handleData)
+    // Decaid replays only its latest frame on connect, so a shot pulled while
+    // we were away shows no espresso->idle edge. Check after that first frame
+    // has refreshed previousState.
+    setTimeout(checkForMissedShot, 1500);
+}
+
+// Picks up a shot that finished while this client was disconnected or
+// backgrounded. Id-only probe; guarded against concurrent runs and bursts of
+// focus/visibility/reopen events.
+const MISSED_SHOT_MIN_INTERVAL_MS = 5000;
+let lastMissedShotCheckAt = 0;
+let missedShotCheckInFlight = false;
+
+async function checkForMissedShot() {
+    if (missedShotCheckInFlight) return;
+    if (Date.now() - lastMissedShotCheckAt < MISSED_SHOT_MIN_INTERVAL_MS) return;
+    missedShotCheckInFlight = true;
+    lastMissedShotCheckAt = Date.now();
+    try {
+        const latest = await api.getLatestShotSummary();
+        // Read the live state after the await: it may have changed meanwhile.
+        const shotLive = previousState?.state === MachineState.ESPRESSO;
+        const knownId = history.getNewestShotId();
+        if (shouldReloadForLatestShot(latest?.id, knownId, shotLive)) {
+            logger.info('Newer shot on the server than the local history; refreshing.');
+            history.refreshToNewestShot(knownId, 3, 1500, latest.id);
+        }
+    } catch (e) {
+        logger.warn('Missed-shot check failed:', e);
+    } finally {
+        missedShotCheckInFlight = false;
+    }
 }
 
 // A silent snapshot socket is NOT proof of a disconnected machine — it is exactly
@@ -750,6 +783,30 @@ function currentMilkProbeReading() {
     return latestSensorTemp;
 }
 
+// The dashboard's pure-paint writers (GHC stop button, sidebar dimming, shot
+// strip, temperatures) skip frames while a sub-page covers it; the last frame
+// is replayed on return. Fed by the router's events, so no per-frame DOM read.
+let mainPageShown = document.getElementById('main-page')?.style.display !== 'none';
+let lastMainPageFrame = null;
+
+function paintMainPageStrip({ data, state, activeStep }) {
+    paintShotStrip({ sample: data, weight: isScaleConnected || isBengleMachine() ? latestScaleWeight : null, state,
+        // Same source as the chart's weight-flow trace (no local EMA fallback: absent shows '-').
+        weightFlow: isBengleMachine() ? (data.weightFlow ?? null) : latestScaleWeightFlow,
+        step: activeStep });
+}
+
+document.addEventListener('streamline:mainpagehidden', () => { mainPageShown = false; });
+document.addEventListener('streamline:mainpagevisible', () => {
+    mainPageShown = true;
+    if (!lastMainPageFrame) return;
+    const { data, state, isActiveState } = lastMainPageFrame;
+    ui.updateGhcStopButton(isActiveState);
+    ui.updateSidebarOverlay(state);
+    paintMainPageStrip(lastMainPageFrame);
+    ui.updateTemperatures({ mix: data.mixTemperature, group: data.groupTemperature, steam: data.steamTemperature });
+});
+
 function handleData(data) {
     if (!data?.state) {
         logger.warn('Received WebSocket message with missing state:', data);
@@ -955,8 +1012,15 @@ function handleData(data) {
     // steam -- without this, a steam pulled from the GHC leaves the tablet
     // untouched and the boiler drops as if the machine had sat idle.
     if (isActiveState) noteEcoSteamActivity();
-    ui.updateGhcStopButton(isActiveState);
-    ui.updateSidebarOverlay(state);
+    // The running profile step, resolved once. The active record follows favourite
+    // switches; the chart's profile is only set on page load.
+    const activeStep = (profileManager.getActiveProfileRecord()?.profile ?? chart.getCurrentProfile())
+        ?.steps?.[data.profileFrame] || null;
+    lastMainPageFrame = { data, state, isActiveState, activeStep };
+    if (mainPageShown) {
+        ui.updateGhcStopButton(isActiveState);
+        ui.updateSidebarOverlay(state);
+    }
 
     // Update UI elements
     // Pass detailed status information to match the enhanced updateMachineStatus function
@@ -965,23 +1029,17 @@ function handleData(data) {
         state: state,
         substate: substate,
         stepName: formatStateString(substate), // Use formatted substate as step name
-        // The running profile step's own name. The active record follows favourite
-        // switches; the chart's profile is only set on page load.
-        profileStepName: (profileManager.getActiveProfileRecord()?.profile ?? chart.getCurrentProfile())
-            ?.steps?.[data.profileFrame]?.name?.trim() || '',
+        // The running profile step's own name.
+        profileStepName: activeStep?.name?.trim() || '',
         timeValue: data.elapsedTime, // Use elapsed time from data if available
         isClickable: (substate === 'preinfusion' || substate === 'pouring'), // Make preinfusion/pouring steps clickable
         isHeating: isHeating, // Pass heating state to UI
         isHeatingFromTimeToReady: heatingSeconds > 0, // countdown available -> render the two-colour form
         steamTemperature: data.steamTemperature // Steam boiler temp — gates the steam "Heating" message
     });
-    paintShotStrip({ sample: data, weight: isScaleConnected || isBengleMachine() ? latestScaleWeight : null, state,
-        // Same source as the chart's weight-flow trace (no local EMA fallback: absent shows '-').
-        weightFlow: isBengleMachine() ? (data.weightFlow ?? null) : latestScaleWeightFlow,
-        // The active record follows favourite switches; the chart's profile is only set on page load.
-        step: (profileManager.getActiveProfileRecord()?.profile ?? chart.getCurrentProfile())?.steps?.[data.profileFrame] || null });
+    if (mainPageShown) paintMainPageStrip(lastMainPageFrame);
     ui.updateSleepButton(state);
-    ui.updateTemperatures({ mix: data.mixTemperature, group: data.groupTemperature, steam: data.steamTemperature });
+    if (mainPageShown) ui.updateTemperatures({ mix: data.mixTemperature, group: data.groupTemperature, steam: data.steamTemperature });
     updateMilkProbeFromSnapshot(currentMilkProbeReading());
 
     // Update Chart and Shot Data Table
@@ -1139,8 +1197,8 @@ async function handleWeightClick() {
                     sendDeviceCommand({ command: 'scan', connect: true });
                 },
                 handleDeviceWsData,
-                () => {},
-                () => {},
+                null,
+                null,
                 handleDeviceConnectionError
             );
         } else {
@@ -1805,10 +1863,9 @@ async function loadInitialData() {
 // the title together.
 const WORKFLOW_POLL_MS = 20_000;
 const WORKFLOW_REFRESH_MIN_GAP_MS = 250; // focus + visibilitychange can both fire
-// A tile press is pushed after a one second debounce, so a press this recent has
-// not reached Decaid yet: painting now would reassign the very variable the
-// pending push is about to send.
-const WORKFLOW_EDIT_GUARD_MS = 1100;
+// A press inside WORKFLOW_EDIT_GUARD_MS (the tile debounce plus slack) has not
+// reached Decaid yet: painting now would reassign the variable the pending push
+// is about to send.
 const WORKFLOW_READBACK_FOLLOWUP_MS = 1500; // a plugin reacting to our write
 const tileEditPending = () => ui.msSinceTileInteraction() < WORKFLOW_EDIT_GUARD_MS || api.hasWorkflowWriteInFlight();
 let lastWorkflowTiles = null;
@@ -1892,8 +1949,8 @@ async function refreshWorkflowTiles() {
     if (keys.length === 0) return;
 
     logger.info(`Workflow changed elsewhere: ${keys.join(', ')}`);
-    if ('profileTitle' in changed) {
-        // A profile switch moves more than the tiles: the chart's step tracking,
+    if (profileChanged(changed)) {
+        // A profile switch or step edit moves more than the tiles: the chart's step tracking,
         // the active-profile record and the favourite highlight all follow it.
         // loadInitialData is the path that does all of that -- dyeStrip's
         // refreshAfterApply picks it for the same reason -- and it re-seeds the
@@ -1909,13 +1966,16 @@ function startWorkflowWatch() {
     workflowWatchStarted = true;
     setInterval(refreshWorkflowTiles, WORKFLOW_POLL_MS);
     document.addEventListener('visibilitychange', () => {
-        if (document.visibilityState === 'visible') refreshWorkflowTiles();
+        if (document.visibilityState === 'visible') { refreshWorkflowTiles(); checkForMissedShot(); }
     });
-    window.addEventListener('focus', refreshWorkflowTiles);
+    window.addEventListener('focus', () => { refreshWorkflowTiles(); checkForMissedShot(); });
     // A plugin that changed the workflow and said so (plugin surfaces' `live`).
     // The skin wrote to Decaid: read it back now, and once more shortly after for a
     // plugin that answers the write by changing the workflow itself.
     api.onWorkflowUpdated(() => {
+        // The profile selector / editor write from a sub-page, where the refresh is
+        // skipped; remember it so the return to the dashboard re-reads.
+        if (isSubPage()) pendingForcedRefresh = true;
         refreshWorkflowTilesSoon();
         setTimeout(refreshWorkflowTilesSoon, WORKFLOW_READBACK_FOLLOWUP_MS);
     });

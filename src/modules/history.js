@@ -1,8 +1,8 @@
 import * as chart from './chart.js';
 import { logger } from './logger.js';
-import { openDB, getLatestShotSummaries, getLatestCachedShotSummaries, getLatestCachedShot, getShot, addShot, addShots, deleteShot as idbDeleteShot, clearShots } from './idb.js';
+import { openDB, getLatestShotSummaries, getLatestCachedShotSummaries, getLatestCachedShot, getShot, addShot, addShots, deleteShot as idbDeleteShot, pruneShotsInRange, clearShots } from './idb.js';
 import { API_BASE_URL, getPlugins } from './api.js';
-import { createHistoryPager } from './history-pager.js';
+import { createHistoryPager, isShotAlreadyDeleted } from './history-pager.js';
 import { renderPastShot, clearShotData } from './shotData.js';
 import { getTranslation } from './i18n.js';
 import { translateProfileTitle } from './profileManager.js';
@@ -88,13 +88,26 @@ const historyPager = createHistoryPager({
         return data;
     },
     fetchSummaryPage: (offset, limit) => getLatestShotSummaries(limit, offset),
-    fetchCachedPage: (offset, limit) => getLatestCachedShotSummaries(limit, offset)
+    fetchCachedPage: (offset, limit) => getLatestCachedShotSummaries(limit, offset),
+    pruneShots: pruneShotsInRange
 });
 
 function applyHistoryPage(page) {
     const selectedId = shots[currentShotIndex]?.id;
     shots = page.shots;
-    if (selectedId) currentShotIndex = shots.findIndex(shot => shot.id === selectedId);
+    if (selectedId) {
+        const index = shots.findIndex(shot => shot.id === selectedId);
+        if (index !== -1) {
+            currentShotIndex = index;
+        } else if (shots.length === 0) {
+            currentShotIndex = -1;
+        } else {
+            // Selected shot was pruned: land on the neighbour AND repaint it so
+            // the on-screen shot is the one Delete/edit act on.
+            currentShotIndex = Math.min(currentShotIndex, shots.length - 1);
+            displayShot(currentShotIndex).catch(error => logger.warn('Could not repaint neighbour shot:', error));
+        }
+    }
     historyHasMore = page.hasMore;
     page.errors.forEach(error => logger.warn('Could not load shot history source:', error));
 }
@@ -488,7 +501,16 @@ export function getNewestShotId() {
 // A single fixed-delay reload races that write and silently shows the previous
 // shot. Poll the list until a shot newer than `knownNewestId` appears, then
 // render it. ponytail: fixed retry budget, not a server-side watcher.
-export async function refreshToNewestShot(knownNewestId, tries = 6, intervalMs = 2000, expectedId = null) {
+let newestRefreshInFlight = null;
+
+export function refreshToNewestShot(knownNewestId, tries = 6, intervalMs = 2000, expectedId = null) {
+    if (newestRefreshInFlight) return newestRefreshInFlight;
+    newestRefreshInFlight = runRefreshToNewestShot(knownNewestId, tries, intervalMs, expectedId)
+        .finally(() => { newestRefreshInFlight = null; });
+    return newestRefreshInFlight;
+}
+
+async function runRefreshToNewestShot(knownNewestId, tries, intervalMs, expectedId) {
     for (let i = 0; i < tries; i++) {
         await loadShotHistory();
         // Success = the expected shot id is on top (exact, from the shotState
@@ -547,7 +569,7 @@ export async function updateShot(id, updates) {
 export async function deleteCurrentShot() {
     const shot = shots[currentShotIndex];
     const response = await fetch(`${API_BASE_URL}/shots/${shot.id}`, { method: 'DELETE' });
-    if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+    if (!response.ok && !isShotAlreadyDeleted(response.status)) throw new Error(`HTTP error! status: ${response.status}`);
     await idbDeleteShot(shot.id);
     shots = historyPager.remove(shot.id);
     if (shots.length === 0) {

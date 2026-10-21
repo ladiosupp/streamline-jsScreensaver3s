@@ -1,6 +1,6 @@
 import * as ui from './ui.js';
 import { logger ,setDebug} from './logger.js';
-import { createSocketSlot } from './socket-slot.js';
+import { createSocketSlot, RECONNECT_POLICY } from './socket-slot.js';
 import { decideResync } from './resync-policy.js';
 import { createScaleSampleBuffer } from './calibrated-steam.js';
 import { clampAutoSteamSettings } from './auto-steam-safety.js';
@@ -44,7 +44,7 @@ export const MachineState = {
 export let reconnectingWebSocket = null; // Exporting for app.js access
 export let currentMachineState = null;
 let previousMachineState = null;
-let scaleWebSocket = null;
+const scaleSocketSlot = createSocketSlot('scale');
 const calibratedSteamSamples = createScaleSampleBuffer();
 let calibratedSteamSamplingEnabled = false;
 
@@ -64,6 +64,8 @@ let sensorSnapshotWebSocketId = null; // sensor `id` the open socket is bound to
 let displayWebSocket = null;
 let displayWebSocketReady = false;
 let pendingDisplayCommand = null;
+// setBrightness is held apart so a later wake-lock/other command cannot displace it.
+let pendingBrightnessCommand = null;
 // Latest DisplayState frame from ws/v1/display. Null until the socket delivers
 // its first snapshot.
 let lastDisplayState = null;
@@ -206,9 +208,7 @@ export async function setGrinderSetting(setting) {
  * moment to forget what was last seen. Returns { close }.
  */
 export function connectGrinderSnapshot(onSnapshot, onOpen = null) {
-    const socket = new ReconnectingWebSocket(`${WS_PROTOCOL}//${reaHostname}:${REA_PORT}/ws/v1/grinder/snapshot`, [], {
-        reconnectInterval: 3000,
-    });
+    const socket = new ReconnectingWebSocket(`${WS_PROTOCOL}//${reaHostname}:${REA_PORT}/ws/v1/grinder/snapshot`, [], { ...RECONNECT_POLICY.background });
     socket.onopen = () => { if (onOpen) onOpen(); };
     socket.onmessage = (event) => {
         try { onSnapshot(JSON.parse(event.data)); } catch (error) { logger.warn('Bad grinder snapshot:', error); }
@@ -514,9 +514,7 @@ export function ensureMachineSnapshotSocket() {
 }
 
 export function connectWebSocket(onData, onReconnect) {
-    reconnectingWebSocket = snapshotSocketSlot.replace(() => new ReconnectingWebSocket(`${WS_PROTOCOL}//${reaHostname}:${REA_PORT}/ws/v1/machine/snapshot`, [], {
-        reconnectInterval: 3000,
-    }));
+    reconnectingWebSocket = snapshotSocketSlot.replace(() => new ReconnectingWebSocket(`${WS_PROTOCOL}//${reaHostname}:${REA_PORT}/ws/v1/machine/snapshot`, [], { ...RECONNECT_POLICY.critical }));
 
     reconnectingWebSocket.onopen = () => {
         logger.info('WebSocket (re)connected.');
@@ -569,11 +567,6 @@ export function connectWebSocket(onData, onReconnect) {
     reconnectingWebSocket.onclose = () => {
         logger.info('WebSocket disconnected. Attempting to reconnect...');
         ui.updateMachineStatus({ status: "Disconnected" });
-        setTimeout(() => {
-            logger.info('reloading now');
-            // location.reload();
-
-        }, 6000);
     };
 
     reconnectingWebSocket.onerror = (error) => {
@@ -592,7 +585,7 @@ export function connectAddressedScaleWebSocket(deviceId, onData, onReconnect, on
     const socket = addressedScaleSocketSlot.replace(() => new ReconnectingWebSocket(
         `${WS_PROTOCOL}//${reaHostname}:${REA_PORT}/ws/v1/scales/${encodeURIComponent(String(deviceId))}/snapshot`,
         [],
-        { reconnectInterval: 3000 },
+        { ...RECONNECT_POLICY.standard },
     ));
     socket.onopen = () => onReconnect?.();
     socket.onmessage = event => {
@@ -617,14 +610,10 @@ export function closeAddressedScaleWebSocket() {
 
 export function connectScaleWebSocket(onData, onReconnect, onDisconnect) {
     calibratedSteamSamples.clear();
-    if (scaleWebSocket) {
-        logger.info('Closing existing scale WebSocket before creating a new one.');
-        scaleWebSocket.close();
-    }
-
-    scaleWebSocket = new ReconnectingWebSocket(`${WS_PROTOCOL}//${reaHostname}:${REA_PORT}/ws/v1/scale/snapshot`, [], {
-        reconnectInterval: 3000,
-    });
+    // The slot silences the previous socket before closing it, so a deliberate
+    // replace (settings wizard takeover/release, post-scan reopen) never fires the
+    // old owner's onDisconnect. Genuine drops still reach onclose below.
+    const scaleWebSocket = scaleSocketSlot.replace(() => new ReconnectingWebSocket(`${WS_PROTOCOL}//${reaHostname}:${REA_PORT}/ws/v1/scale/snapshot`, [], { ...RECONNECT_POLICY.standard }));
 
     scaleWebSocket.onopen = () => {
         calibratedSteamSamples.clear();
@@ -687,9 +676,7 @@ export function connectSensorSnapshotWebSocket(sensorId, onData) {
     }
 
     sensorSnapshotWebSocketId = sensorId;
-    sensorSnapshotWebSocket = new ReconnectingWebSocket(`${WS_PROTOCOL}//${reaHostname}:${REA_PORT}/ws/v1/sensors/${sensorId}/snapshot`, [], {
-        reconnectInterval: 3000,
-    });
+    sensorSnapshotWebSocket = new ReconnectingWebSocket(`${WS_PROTOCOL}//${reaHostname}:${REA_PORT}/ws/v1/sensors/${sensorId}/snapshot`, [], { ...RECONNECT_POLICY.background });
 
     sensorSnapshotWebSocket.onmessage = (event) => {
         try {
@@ -716,9 +703,7 @@ export function closeSensorSnapshotWebSocket() {
 }
 
 export function connectShotSettingsWebSocket(onData) {
-    const shotSettingsWebSocket = shotSettingsSocketSlot.replace(() => new ReconnectingWebSocket(`${WS_PROTOCOL}//${reaHostname}:${REA_PORT}/ws/v1/machine/shotSettings`, [], {
-        reconnectInterval: 3000,
-    }));
+    const shotSettingsWebSocket = shotSettingsSocketSlot.replace(() => new ReconnectingWebSocket(`${WS_PROTOCOL}//${reaHostname}:${REA_PORT}/ws/v1/machine/shotSettings`, [], { ...RECONNECT_POLICY.standard }));
 
     shotSettingsWebSocket.onopen = () => {
         logger.info('Shot Settings WebSocket connected');
@@ -743,13 +728,49 @@ export function connectShotSettingsWebSocket(onData) {
     };
 }
 
+// Water tank feed (ws/v1/machine/waterLevels). Bound to a De1 *instance* on the
+// server (de1handler.dart `_withDe1Ws`), so app.js re-opens it after a machine
+// power-cycle; the slot closes and silences the previous socket first.
+const waterLevelSocketSlot = createSocketSlot('water level');
+
+export function connectWaterLevelsWebSocket(onData) {
+    const socket = waterLevelSocketSlot.replace(() => new ReconnectingWebSocket(`${WS_PROTOCOL}//${reaHostname}:${REA_PORT}/ws/v1/machine/waterLevels`, [], { ...RECONNECT_POLICY.standard }));
+
+    socket.onopen = () => {
+        logger.info('Water tank WebSocket connection established.');
+    };
+
+    socket.onmessage = (event) => {
+        let data;
+        try {
+            data = JSON.parse(event.data);
+        } catch (error) {
+            logger.error('Error parsing water level data:', error);
+            return;
+        }
+        try {
+            onData(data);
+        } catch (error) {
+            logger.error('Error handling water level data:', error);
+        }
+    };
+
+    socket.onclose = (event) => {
+        logger.info('Water tank WebSocket connection closed.', event && event.reason);
+    };
+
+    socket.onerror = () => {
+        logger.error('Water tank WebSocket error. See library logs for details.');
+    };
+
+    return socket;
+}
+
 // ShotState feed (ws/v1/machine/shotState): shot phase + decision frames from
 // Rea's shot sequencer. The server replays the latest frame on connect and the
 // socket is not gated on a connected machine — attach once and keep it open.
 export function connectShotStateWebSocket(onData) {
-    const shotStateWebSocket = new ReconnectingWebSocket(`${WS_PROTOCOL}//${reaHostname}:${REA_PORT}/ws/v1/machine/shotState`, [], {
-        reconnectInterval: 3000,
-    });
+    const shotStateWebSocket = new ReconnectingWebSocket(`${WS_PROTOCOL}//${reaHostname}:${REA_PORT}/ws/v1/machine/shotState`, [], { ...RECONNECT_POLICY.standard });
 
     shotStateWebSocket.onopen = () => {
         logger.info('Shot State WebSocket connected');
@@ -786,7 +807,7 @@ export function connectPluginPush(pluginId, endpoint, onPush) {
     return slot.replace(() => {
         const socket = new ReconnectingWebSocket(
             `${WS_PROTOCOL}//${reaHostname}:${REA_PORT}/ws/v1/plugins/${encodeURIComponent(pluginId)}/${encodeURIComponent(endpoint)}`,
-            [], { reconnectInterval: 5000, maxReconnectInterval: 60000 });
+            [], { ...RECONNECT_POLICY.background, maxReconnectInterval: 60000 });
         socket.onmessage = (event) => { try { onPush(event?.data); } catch (error) { logger.warn('Plugin push handler failed:', error); } };
         return socket;
     });
@@ -800,9 +821,7 @@ export function closePluginPush(pluginId) {
 }
 
 export function connectTimeToReadyWebSocket(onData) {
-    const timeToReadyWebSocket = new ReconnectingWebSocket(`${WS_PROTOCOL}//${reaHostname}:${REA_PORT}/ws/v1/plugins/time-to-ready.reaplugin/timeToReady`, [], {
-        reconnectInterval: 3000,
-    });
+    const timeToReadyWebSocket = new ReconnectingWebSocket(`${WS_PROTOCOL}//${reaHostname}:${REA_PORT}/ws/v1/plugins/time-to-ready.reaplugin/timeToReady`, [], { ...RECONNECT_POLICY.standard });
 
     timeToReadyWebSocket.onopen = () => {
         logger.info('Time-to-ready WebSocket connected');
@@ -833,7 +852,7 @@ export function connectProfileGeneratedWebSocket(onData) {
     profileGeneratedWebSocket = new ReconnectingWebSocket(
         `${WS_PROTOCOL}//${reaHostname}:${REA_PORT}/ws/v1/plugins/decent-profile.reaplugin/profileGenerated`,
         [],
-        { debug: false, reconnectInterval: 3000 }
+        { ...RECONNECT_POLICY.background, debug: false }
     );
 
     profileGeneratedWebSocket.onopen = () => {
@@ -912,9 +931,7 @@ export function connectDeviceWebSocket(onData, onReconnect, onDisconnect, onErro
         return;
     }
 
-    deviceWebSocket = new ReconnectingWebSocket(`${WS_PROTOCOL}//${reaHostname}:${REA_PORT}/ws/v1/devices`, [], {
-        reconnectInterval: 3000,
-    });
+    deviceWebSocket = new ReconnectingWebSocket(`${WS_PROTOCOL}//${reaHostname}:${REA_PORT}/ws/v1/devices`, [], { ...RECONNECT_POLICY.critical });
 
     deviceWebSocket.onopen = () => {
         logger.info('Device WebSocket (re)connected.');
@@ -1056,9 +1073,7 @@ export function connectDisplayWebSocket(onData) {
         return;
     }
 
-    displayWebSocket = new ReconnectingWebSocket(`${WS_PROTOCOL}//${reaHostname}:${REA_PORT}/ws/v1/display`, [], {
-        reconnectInterval: 3000,
-    });
+    displayWebSocket = new ReconnectingWebSocket(`${WS_PROTOCOL}//${reaHostname}:${REA_PORT}/ws/v1/display`, [], { ...RECONNECT_POLICY.standard });
 
     displayWebSocket.onopen = () => {
         logger.info('Display WebSocket connected');
@@ -1069,10 +1084,10 @@ export function connectDisplayWebSocket(onData) {
         if (isWakeLockEnabled()) {
             enableWakeLock().catch((e) => logger.warn('Failed to re-arm wake-lock on connect:', e));
         }
-        if (pendingDisplayCommand) {
-            sendDisplayCommand(pendingDisplayCommand);
-            pendingDisplayCommand = null;
-        }
+        const queuedCommands = [pendingDisplayCommand, pendingBrightnessCommand].filter(Boolean);
+        pendingDisplayCommand = null;
+        pendingBrightnessCommand = null;
+        for (const queued of queuedCommands) sendDisplayCommand(queued);
     };
 
     displayWebSocket.onmessage = (event) => {
@@ -1108,17 +1123,21 @@ export function connectDisplayWebSocket(onData) {
  * @param {Object} command - The command payload
  * @param {string} command.command - The command type: 'setBrightness', 'requestWakeLock', or 'releaseWakeLock'
  * @param {number} [command.brightness] - Brightness value 0-100 (required for setBrightness)
+ * @returns {'sent'|'queued'} 'queued' = the socket was not ready; only the latest setBrightness and the latest other command are kept
+ *   and go out when the socket opens.
  */
 export function sendDisplayCommand(command) {
     if (!displayWebSocket || !displayWebSocketReady || displayWebSocket.readyState !== WebSocket.OPEN) {
         logger.warn('Display WebSocket not ready. Queuing command:', command);
-        pendingDisplayCommand = command;
-        return;
+        if (command?.command === 'setBrightness') pendingBrightnessCommand = command;
+        else pendingDisplayCommand = command;
+        return 'queued';
     }
 
     try {
         displayWebSocket.send(JSON.stringify(command));
         logger.info('Display command sent:', command);
+        return 'sent';
     } catch (error) {
         logger.error('Error sending display command:', error);
         throw error;
@@ -1145,9 +1164,7 @@ export function connectUpdateWebSocket(onData, onOpen) {
         return;
     }
 
-    updateWebSocket = new ReconnectingWebSocket(`${WS_PROTOCOL}//${reaHostname}:${REA_PORT}/ws/v1/update`, [], {
-        reconnectInterval: 3000,
-    });
+    updateWebSocket = new ReconnectingWebSocket(`${WS_PROTOCOL}//${reaHostname}:${REA_PORT}/ws/v1/update`, [], { ...RECONNECT_POLICY.background });
 
     updateWebSocket.onopen = () => {
         logger.info('Update WebSocket connected');
@@ -1317,15 +1334,17 @@ export const DYE2_KV_NAMESPACE = 'dye2.reaplugin';
 
 // Read one DYE2 collection key as an array. A never-written key makes the bridge
 // return 200 with a non-array body (a known quirk), so coerce anything that
-// isn't an array — and any transport error — to [] so the header degrades to
-// "no DYE2 data" rather than throwing.
+// isn't an array (Decaid answers a missing key with 200 `null`) to [] so the
+// header degrades to "no DYE2 data". A transport/HTTP error returns null, NOT [],
+// so callers can tell "the read failed" from "genuinely empty" and keep what
+// they already have instead of wiping it. Never throws.
 export async function getDye2KvArray(key) {
     try {
         const val = await getKVValue(DYE2_KV_NAMESPACE, key);
         return Array.isArray(val) ? val : [];
     } catch (e) {
-        logger.info(`getDye2KvArray(${key}) → [] (${e.message})`);
-        return [];
+        logger.info(`getDye2KvArray(${key}) → null (${e.message})`);
+        return null;
     }
 }
 
@@ -2355,6 +2374,15 @@ export async function getShotIds() {
     if (!response.ok) {
         throw new Error('Failed to get shot ids');
     }
+    return response.json();
+}
+
+// Newest shot's metadata (no measurements) -- cheap probe for "did a shot land
+// while we were away". Returns null when there is none or the server answers
+// non-OK; a network failure throws, so callers must catch.
+export async function getLatestShotSummary() {
+    const response = await fetch(`${API_BASE_URL}/shots/latest`);
+    if (!response.ok) return null;
     return response.json();
 }
 

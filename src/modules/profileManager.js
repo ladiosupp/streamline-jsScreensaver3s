@@ -7,6 +7,7 @@ import { openDB, getSetting, setSetting } from './idb.js';
 import { loadPage } from './router.js'; // Singular and correctly formatted import
 import { getTranslation, fitTextToBox } from './i18n.js';
 import { resolveProfileKeyByTitle } from './active-profile.js';
+import { planAssignmentsLoad, mayPersistAutoPopulate } from './favorites-load.js';
 import { loadProfileOverrides, saveProfileOverride, clearProfileOverride, applyOverridesToRecords } from './profile-overrides.js';
 import { applyFlowCalibrationForProfile } from './flow-calibration.js';
 import { profileAtBrewTemp } from './brew-temp.js';
@@ -171,6 +172,11 @@ export async function remapFavorite(oldId, newId) {
         if (id === oldId) { favoriteAssignments[slot] = newId; changed = true; }
     }
     if (changed) await saveAssignments({ markUserInitialized: false });
+    // The wake profile is stored by id too; without this it keeps pointing at the
+    // retired (hidden) pre-edit record.
+    try {
+        if (localStorage.getItem('wakeProfileId') === oldId) localStorage.setItem('wakeProfileId', newId);
+    } catch (_) { /* storage unavailable */ }
 }
 
 export async function loadAvailableProfiles() {
@@ -370,8 +376,11 @@ async function getFavoritesInitializedFlag() {
     return false;
 }
 
+let assignmentsReadOk = true; // false when the last loadAssignments() could not reach the Decaid store
+
 export async function loadAssignments() {
     logger.info('Loading assignments...');
+    assignmentsReadOk = true;
     try {
         // 1. Try to fetch from the primary source (REA store)
         const reaAssignments = await getValueFromStore(SETTINGS_NAMESPACE, FAVORITES_KEY);
@@ -394,7 +403,9 @@ export async function loadAssignments() {
         logger.warn('No assignments in REA store, checking IndexedDB backup...');
         const idbAssignments = await getSetting(FAVORITES_KEY);
 
-        if (isValidAssignments(idbAssignments)) {
+        // The read above succeeded and found nothing, so restoring the backup into
+        // the store is safe (first-run migration / wiped store).
+        if (planAssignmentsLoad({ readOk: true, remote: reaAssignments, backup: idbAssignments }).writeBack) {
             logger.info('Loaded assignments from IndexedDB backup.');
             favoriteAssignments = idbAssignments;
             validateButtonIndices();
@@ -413,15 +424,17 @@ export async function loadAssignments() {
 
     } catch (error) {
         // This catch block handles network failures when trying to reach the REA store.
+        assignmentsReadOk = false;
         logger.error('Failed to load from REA store. Falling back to IndexedDB.', error);
         try {
             const idbAssignments = await getSetting(FAVORITES_KEY);
-            if (isValidAssignments(idbAssignments)) {
+            if (planAssignmentsLoad({ readOk: false, remote: null, backup: idbAssignments }).source === 'backup') {
                 logger.info('Successfully loaded from IndexedDB backup during fallback.');
                 favoriteAssignments = idbAssignments;
                 validateButtonIndices();
-                await setValueInStore(SETTINGS_NAMESPACE, FAVORITES_KEY, favoriteAssignments);
-                await setSetting(FAVORITES_KEY, favoriteAssignments);
+                // Local use only. The read failed, so the store may hold another
+                // device's newer favourites; writing the backup over them would
+                // lose those. The next successful save or load reconciles.
             } else {
                  // Both stores empty — leave slots null so init() auto-populates.
                  logger.warn('IndexedDB backup is also empty. Deferring to auto-populate.');
@@ -493,7 +506,9 @@ export function syncActiveProfileFromTitle(title) {
     // already active, or the one a favourite slot holds, so the slot's highlight
     // survives the rebind (#150).
     if (key) {
-        const sameTitle = k => !!k && availableProfiles[k]?.profile?.title === availableProfiles[key]?.profile?.title;
+        // A hidden (superseded) record never wins the tie-break: it is not what the user runs.
+        const sameTitle = k => !!k && availableProfiles[k]?.visibility !== 'hidden'
+            && availableProfiles[k]?.profile?.title === availableProfiles[key]?.profile?.title;
         if (sameTitle(activeProfileId)) key = activeProfileId;
         else key = Object.values(favoriteAssignments || {}).find(sameTitle) ?? key;
     }
@@ -709,17 +724,18 @@ async function recipeHoldsDial(profile) {
 export async function loadProfileForWake(profileId) {
     let profile = availableProfiles[profileId]?.profile;
 
-    // The stored id can go stale: editing a profile hides the source record and
-    // promotes a new id for the edited copy (profile_editor.js's save flow), and
-    // loadAvailableProfiles() filters hidden records out of availableProfiles.
-    // Resolve forward by title instead of silently giving up, same fallback
-    // active-profile.js uses for the same id-churn problem.
-    if (!profile) {
+    // The stored id can go stale: editing a profile retires the source record
+    // (visibility 'hidden', kept in availableProfiles for revert history) and
+    // promotes a new id for the edited copy (profile_editor.js's save flow).
+    // A hidden record would load the pre-edit content, so resolve forward by
+    // title to the visible record, same fallback active-profile.js uses.
+    const stored = availableProfiles[profileId];
+    if (!stored || stored.visibility === 'hidden') {
         try {
-            const allRecords = await getProfiles(); // includeHidden=true
-            const staleTitle = allRecords.find(r => r.id === profileId)?.profile?.title;
+            const staleTitle = stored?.profile?.title
+                ?? (await getProfiles()).find(r => r.id === profileId)?.profile?.title; // includeHidden=true
             const resolvedKey = staleTitle && resolveProfileKeyByTitle(availableProfiles, staleTitle, translateProfileTitle);
-            if (resolvedKey) {
+            if (resolvedKey && resolvedKey !== profileId) {
                 profile = availableProfiles[resolvedKey].profile;
                 logger.info(`Wake profile ${profileId} was superseded by an edit; resolved by title to ${resolvedKey}.`);
                 profileId = resolvedKey;
@@ -1381,7 +1397,11 @@ async function autoPopulateFavoritesFromHistory() {
         }
     }
 
-    await saveAssignments({ markUserInitialized: false });
+    if (mayPersistAutoPopulate(assignmentsReadOk)) {
+        await saveAssignments({ markUserInitialized: false });
+    } else {
+        logger.warn('Decaid favourites read failed; auto-populated favourites kept local, not saved.');
+    }
     updateButtonUI();
 
     // Best-effort: recipe sidebar pre-fill from the most recent shot.
