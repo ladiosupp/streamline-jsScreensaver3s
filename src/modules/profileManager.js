@@ -10,6 +10,7 @@ import { resolveProfileKeyByTitle } from './active-profile.js';
 import { planAssignmentsLoad, mayPersistAutoPopulate } from './favorites-load.js';
 import { loadProfileOverrides, saveProfileOverride, clearProfileOverride, applyOverridesToRecords } from './profile-overrides.js';
 import { applyFlowCalibrationForProfile } from './flow-calibration.js';
+import { recipeIdPatch } from './dye-selection.js';
 import { profileSendBlocked, setPendingProfileSend, clearPendingProfileSend } from './profile-send-gate.js';
 import { profileAtBrewTemp } from './brew-temp.js';
 import { profileFingerprint } from './dye-selection.js';
@@ -605,8 +606,7 @@ export function withSavedBrewTemp(profile, metadata) {
 
 // Steam duration/flow aren't profile fields (they live on the workflow, not
 // profile.steps), so unlike dose/yield/grind they can't ride along in an
-// updateWorkflow call -- they need their own setter calls, which also carry the
-// heater on/off side effect for duration (see setTargetSteamDuration). Only push
+// updateWorkflow call -- they need their own setter calls. Only push
 // when this profile actually has a saved value; with no record, leave whatever
 // the machine is currently set to alone. Every way into a profile switch calls
 // this -- the favourite buttons, the selector's Confirm and its context-menu
@@ -617,10 +617,9 @@ export async function applySavedSteamSettings(metadata) {
     if (savedSteamDuration == null && savedSteamFlow == null) return;
     try {
         // Sequential, not Promise.all: both PUT the same workflow record's
-        // steamSettings sub-object, and duration's own write already does a
-        // read-modify-write of targetTemperature (steamHeaterFor) -- running them
-        // concurrently risks one write clobbering the other depending on Decaid's
-        // merge order. One extra await here is once per profile switch.
+        // steamSettings sub-object -- running them concurrently
+        // risks one write clobbering the other depending on Decaid's merge
+        // order. One extra await here is once per profile switch.
         if (savedSteamDuration != null) await setTargetSteamDuration(savedSteamDuration);
         if (savedSteamFlow != null) await setTargetSteamFlow(savedSteamFlow);
         updateSteamDisplay({
@@ -709,8 +708,11 @@ export async function sendProfileRecordToMachine(record) {
                 targetDoseWeight: meta.targetDoseWeight ?? lastTargetDoseWeight() ?? DEFAULT_DOSE_WEIGHT,
                 targetYield,
                 grinderSetting: meta.grinderSetting ?? lastGrinderSetting() ?? null,
+                // The profile changed, so the recipe being dialled in is no
+                // longer this one (dye2#36).
+                ...recipeIdPatch(null),
             },
-        });
+        }, 'profile.send');
     } catch (err) {
         logger.warn('Could not send profile to the machine:', err);
         return 'failed';
@@ -827,7 +829,7 @@ export async function loadProfileForWake(profileId) {
     const profileToSend = withSavedBrewTemp(
         targetYield > 0 ? { ...profile, target_weight: targetYield } : profile, meta);
     try {
-        await updateWorkflow({ profile: profileToSend, context: { targetDoseWeight, targetYield, grinderSetting } });
+        await updateWorkflow({ profile: profileToSend, context: { targetDoseWeight, targetYield, grinderSetting, ...recipeIdPatch(null) } }, 'profile.wake');
         setActiveProfile(profileId);
         // Steam rides its own setters, not the workflow context.
         await applySavedSteamSettings(meta);
@@ -880,7 +882,7 @@ export async function resetActiveProfileToDefaults() {
     const targetYield = isNaN(parsedYield) ? 0 : parsedYield;
     let sentWorkflow;
     try {
-        sentWorkflow = await updateWorkflow({ profile, context: { targetDoseWeight, targetYield, grinderSetting: null } });
+        sentWorkflow = await updateWorkflow({ profile, context: { targetDoseWeight, targetYield, grinderSetting: null, ...recipeIdPatch(null) } }, 'profile.resetDefaults');
     } catch (error) {
         logger.error('Failed to re-apply profile defaults to workflow:', error);
         return false;
@@ -1066,8 +1068,8 @@ async function handleProfileClick(index) {
             ? await getWorkflow()
             : await updateWorkflow({
                 profile: profileToSend,
-                context: { targetDoseWeight, targetYield: displayYield, ...grindContext }
-            });
+                context: { targetDoseWeight, targetYield: displayYield, ...grindContext, ...recipeIdPatch(null) }
+            }, 'profile.send');
         // Paint the tiles from the workflow Rea echoed back rather than from the
         // numbers we meant to send, so what the user reads is what the machine
         // will actually brew with -- no guessing whether a value stuck.
