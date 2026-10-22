@@ -2189,18 +2189,13 @@ function renderSettingsTab() {
             shareImportBtn.textContent = getTranslation('Importing');
             shareStatus.textContent = '';
             try {
-                const vizSettings = await getPluginSettings('visualizer.reaplugin');
-                // Secure settings come back as { isSet } state, never plaintext (decaid #588).
-                const password = vizSettings?.Password;
-                const passwordSet = password == null ? false
-                    : typeof password === 'object' ? password.isSet === true
-                    : !!password; // legacy cleartext from older decaid
-                const isConfigured = vizSettings?.Enabled !== false && !!(vizSettings?.Username && passwordSet);
-                if (!isConfigured) {
+                const { VISUALIZER_PLUGIN_ID, visualizerAccountConfigured } = await import('./visualizer-account.js');
+                const vizSettings = await getPluginSettings(VISUALIZER_PLUGIN_ID);
+                if (!visualizerAccountConfigured(vizSettings)) {
                     shareStatus.innerHTML = 'No Visualizer account found. Go to <strong>Settings → Extensions → Visualizer</strong> to log in first.';
                     return;
                 }
-                const result = await callPluginEndpoint('visualizer.reaplugin', 'import', { shareCode: code });
+                const result = await callPluginEndpoint(VISUALIZER_PLUGIN_ID, 'import', { shareCode: code });
                 if (!result.success) {
                     const msg = result.error || 'Import failed';
                     const isAuthError = /credential|login|auth|unauthorized|password|username/i.test(msg);
@@ -2902,6 +2897,26 @@ function finishSaveSuccess(id) {
     setTimeout(() => { loadPage(_returnUrl); }, 1000);
 }
 
+// A save writes to /profiles, which is the library. The machine keeps running
+// whatever updateWorkflow last sent it, so an edit to the profile currently
+// loaded stayed invisible on the machine until the user re-picked it in the
+// selector. Push it here instead: saving loads the profile.
+//
+// sendProfileRecordToMachine holds it instead of sending when the machine is
+// mid-shot -- see profile-send-gate.js for why writing then is unsafe -- and
+// app.js sends what was held once the shot ends.
+async function pushSavedProfileToMachine(saved) {
+    if (!saved?.profile) return;
+    const { sendProfileRecordToMachine } = await import('./profileManager.js');
+    const result = await sendProfileRecordToMachine(saved);
+    if (result === 'deferred') {
+        showToast(getTranslation('The machine is brewing — this profile loads when the shot ends.'), 4000, 'info');
+    }
+    // 'failed' is logged by the send itself. The save succeeded and the machine
+    // simply stays on the previous profile, which is what happened before this
+    // existed -- not worth turning a good save into a failed one.
+}
+
 // Save routing for a profile opened from a local-only draft (see
 // profileManager.js duplicateProfileAsDraft / createOrUpdateDraft). Never
 // throws — called from saveProfile without an await, so an escaped rejection
@@ -2936,6 +2951,7 @@ async function saveDraftEdit(draftRecord) {
             });
             editorState.sourceProfileRecord = updated;
             _baselineProfileJson = JSON.stringify(editorState.profile);
+            await pushSavedProfileToMachine(updated);
             finishSaveSuccess(updated.id);
             return;
         }
@@ -2980,6 +2996,7 @@ async function saveDraftEdit(draftRecord) {
         editorState.sourceProfileId = saved.id;
         _baselineProfileJson = JSON.stringify(editorState.profile);
 
+        await pushSavedProfileToMachine(saved);
         finishSaveSuccess(saved.id);
     } catch (err) {
         console.error('Draft save failed:', err);
@@ -3325,6 +3342,7 @@ async function saveProfile({ asNew = false } = {}) {
         _baselineProfileJson = JSON.stringify(editorState.profile);
         updateSaveAsNewButtonState();
 
+        await pushSavedProfileToMachine(saved);
         finishSaveSuccess(saved.id);
     } catch (err) {
         console.error('Profile save failed:', err);

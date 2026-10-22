@@ -4,6 +4,8 @@ import { openDB } from './idb.js';
 import { logger } from './logger.js';
 import { initResizablePanels, showToast, initFullscreenHandler, updateProfileName, setupPressAndHold, flashIconButton } from './ui.js';
 import { sendProfile, getWorkflow, updateWorkflow, deleteProfile, updateProfileVisibility, getProfileLineage } from './api.js';
+import { profileSendBlocked, setPendingProfileSend } from './profile-send-gate.js';
+import { currentMachineState } from './api.js';
 import { initChart, plotProfile } from './chart.js';
 import { translatePage, getTranslation } from './i18n.js';
 import { loadPage } from './router.js';
@@ -268,10 +270,17 @@ async function handleConfirm() {
         showToast(`An error occurred: selected profile not found.`, 3000, 'alert');
         return;
     }
+    // Never write profile frames into a shot the machine is running -- see
+    // profile-send-gate.js. Hold the switch; app.js sends it when the shot ends.
+    if (profileSendBlocked(currentMachineState)) {
+        setPendingProfileSend(profileRecord);
+        showToast(getTranslation('The machine is brewing — this profile loads when the shot ends.'), 4000, 'info');
+        return;
+    }
     const profile = profileRecord.profile;
     const meta = profileRecord.metadata || {};
-    // Same fallback chains as the favourite buttons (profileManager
-    // applyProfileToMachine) -- keep the two in step. Neither dose nor grind is a
+    // Same fallback chains as sendProfileRecordToMachine (profileManager) --
+    // keep them in step. Neither dose nor grind is a
     // profile field (see DEFAULT_DOSE_WEIGHT), so behind the user's saved override
     // for this profile there is only the last number they set anywhere. Yield is a
     // profile field, so the recipe answers for it.
@@ -279,8 +288,7 @@ async function handleConfirm() {
     const grindContext = savedGrind != null ? { grinderSetting: savedGrind } : { grinderSetting: null };
     const targetDoseWeight = meta.targetDoseWeight ?? lastTargetDoseWeight() ?? DEFAULT_DOSE_WEIGHT;
     const effectiveYield = meta.targetYield        ?? parseFloat(profile.target_weight);
-    // Same saved-override fold the favourite buttons do (profileManager
-    // applyProfileToMachine) -- this page is the other way into a profile
+    // Same saved-override fold sendProfileRecordToMachine does -- this page is the other way into a profile
     // switch, and without it a brew-temp edit is lost coming through here.
     const profileToSend = withSavedBrewTemp(profile, meta);
 
@@ -344,7 +352,7 @@ async function handleConfirm() {
             applyWorkflowToMainPageUI(sentworkflow);
             // Steam rides its own setters, not the workflow context, so the
             // paint above cannot carry it -- same call the favourite buttons
-            // make (profileManager applyProfileToMachine). Without it a profile
+            // make (profileManager applySavedSteamSettings). Without it a profile
             // switched through this page kept the previous profile's steam.
             await applySavedSteamSettings(meta);
             if (!assignWasRejected) {
@@ -475,7 +483,15 @@ function showProfileContextMenu(key, profileRecord, anchorEl) {
                 const targetDoseWeight = meta.targetDoseWeight ?? lastTargetDoseWeight() ?? DEFAULT_DOSE_WEIGHT;
                 const yieldVal = meta.targetYield ?? parseFloat(pr.profile.target_weight);
                 const grind    = meta.grinderSetting ?? lastGrinderSetting();
-                try {
+                // ...and the same mid-shot guard, for the same reason: this is a
+                // profile switch, so it would rewrite the frames of a running
+                // shot (profile-send-gate.js). Hold it for the end of the shot.
+                if (profileSendBlocked(currentMachineState)) {
+                    // The assignment itself already landed, so only the switch is
+                    // held -- fall through to the "assigned" toast below.
+                    setPendingProfileSend(pr);
+                    showToast(getTranslation('The machine is brewing — this profile loads when the shot ends.'), 4000, 'info');
+                } else try {
                     // Assigning from here switches the machine to the profile, so it
                     // owes the same saved overrides as the other two ways in: the
                     // brew temp folded onto the profile, and steam pushed after.

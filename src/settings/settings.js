@@ -1,5 +1,6 @@
 import { isEcoSteamEnabled, setEcoSteamEnabled } from '../modules/eco-steam.js';
-import {  getReaSettings, getDe1Settings, getDe1AdvancedSettings, setReaSettings, setDe1Settings, setDe1AdvancedSettings, resetDe1Settings, setMachineState, connectScaleDevice, connectDeviceWebSocket, sendDeviceCommand, awaitDeviceConnectResult, dimDisplay, restoreDisplay, isBlackScreenSaver, setBlackScreenSaver as apiSetBlackScreenSaver, rememberBrightness, getLastDisplayState, currentMachineState, signalHeartbeat, MachineState, getDeviceWebSocket, initDeviceWebSocketWithCallback, saveScaleDeviceId, getScaleDeviceId, connectDisplayWebSocket, sendDisplayCommand, connectUpdateWebSocket, sendUpdateCommand, enableWakeLock, disableWakeLock, isWakeLockEnabled, isWakeProfileEnabled, getWakeProfileId, getPresenceSettings, setPresenceSettings, getPresenceSchedules, createPresenceSchedule, updatePresenceSchedule, deletePresenceSchedule, getAppInfo, getMachineInfo, getWorkflow, updateWorkflow, getAllSkins, getDefaultSkin, setDefaultSkin, updateSkins, stopWebuiServer, startWebuiServer, getWebuiServerStatus, uploadFirmware, applyFirmware, cancelFirmwareUpdate, getFirmwareCatalog, setWaterLevels, API_BASE_URL, listWifiScales, addWifiScale, removeWifiScale, forgetDevice, getLedStrip, setLedStrip, commitLedStrip, getCupWarmer, setCupWarmer, setCupWarmerPrewarm, calibrateScale, tareScale, getSensorCalibration, setSensorCalibration, getLastMachineSnapshot, ensureMachineSnapshotSocket, connectScaleWebSocket, setFirmwareFlashInFlight, persistSharedValue, MILK_STOP_LAST_VALUE_KEY, STEAM_DURATION_LAST_VALUE_KEY, STEAM_FLOW_LAST_VALUE_KEY, STEAM_TEMP_LAST_VALUE_KEY, HOT_WATER_VOLUME_LAST_VALUE_KEY, HOT_WATER_TEMP_LAST_VALUE_KEY, approvePluginUpdate, getPlugins, getDecentAccountStatus, getPluginSettings, setPluginSettings, callPluginEndpoint, enablePlugin } from '../modules/api.js';
+import {  getReaSettings, getDe1Settings, getDe1AdvancedSettings, setReaSettings, setDe1Settings, setDe1AdvancedSettings, resetDe1Settings, setMachineState, connectScaleDevice, connectDeviceWebSocket, sendDeviceCommand, awaitDeviceConnectResult, dimDisplay, restoreDisplay, isBlackScreenSaver, setBlackScreenSaver as apiSetBlackScreenSaver, rememberBrightness, getLastDisplayState, currentMachineState, signalHeartbeat, MachineState, getDeviceWebSocket, initDeviceWebSocketWithCallback, saveScaleDeviceId, getScaleDeviceId, connectDisplayWebSocket, sendDisplayCommand, connectUpdateWebSocket, sendUpdateCommand, enableWakeLock, disableWakeLock, isWakeLockEnabled, isWakeProfileEnabled, getWakeProfileId, getPresenceSettings, setPresenceSettings, getPresenceSchedules, createPresenceSchedule, updatePresenceSchedule, deletePresenceSchedule, getAppInfo, getMachineInfo, getWorkflow, updateWorkflow, getAllSkins, getDefaultSkin, setDefaultSkin, updateSkins, stopWebuiServer, startWebuiServer, getWebuiServerStatus, uploadFirmware, applyFirmware, cancelFirmwareUpdate, getFirmwareCatalog, setWaterLevels, API_BASE_URL, listWifiScales, addWifiScale, removeWifiScale, forgetDevice, getLedStrip, setLedStrip, commitLedStrip, previewLedStrip, clearLedStripPreview, getCupWarmer, setCupWarmer, setCupWarmerPrewarm, calibrateScale, tareScale, getSensorCalibration, setSensorCalibration, getLastMachineSnapshot, ensureMachineSnapshotSocket, connectScaleWebSocket, setFirmwareFlashInFlight, persistSharedValue, MILK_STOP_LAST_VALUE_KEY, STEAM_DURATION_LAST_VALUE_KEY, STEAM_FLOW_LAST_VALUE_KEY, STEAM_TEMP_LAST_VALUE_KEY, HOT_WATER_VOLUME_LAST_VALUE_KEY, HOT_WATER_TEMP_LAST_VALUE_KEY, approvePluginUpdate, getPlugins, getDecentAccountStatus, getPluginSettings, setPluginSettings, callPluginEndpoint, enablePlugin } from '../modules/api.js';
+import { isCustomSaverBrightness, setCustomSaverBrightnessEnabled, getSaverBrightness, setSaverBrightness, SAVER_BRIGHTNESS_DEFAULT } from '../modules/api.js';
 import * as ui from '../modules/ui.js';
 import { availableProfiles, translateProfileTitle, loadAvailableProfiles } from '../modules/profileManager.js';
 import { initScaling } from '../modules/scaling.js';
@@ -12,9 +13,8 @@ import { brightnessNotices, QUEUED_NOTICE, LOW_BATTERY_NOTICE, GO_TO_SETTING_LAB
 import { resolveSteamStopMode, applyMilkProbeGate } from '../modules/steam-mode.js';
 import { summarizeFirmwareCatalog, isFirmwareCancellationError, estimateRemainingSeconds, isUploadComplete, estimateVerifyRemainingSeconds, estimateTotalRemainingSeconds, FIRMWARE_VERIFY_SECONDS, formatDuration } from '../modules/firmware-progress.js';
 import { setScreensaverSuppressed, isMachineAsleep } from '../modules/screensaver-policy.js';
-import { VISUALIZER_DEFAULT_SERVER, VISUALIZER_SERVER_SETTING, normalizeServerUrl, pluginSupportsCustomServer, planServerChange } from '../modules/visualizer-server.js';
 import { SCREENSAVER_CLOCK_FORMATS, SCREENSAVER_CLOCK_POSITIONS, SCREENSAVER_DATE_FORMATS, resolveScreensaverDateFormat, resolveScreensaverClockFormat, resolveScreensaverClockPosition } from '../modules/screensaver-clock.js';
-import { ledRgbToColor16, ledColor16ToHex8, ledHexToRgb, ledPreviewComposite, ledLiveWriteState } from '../modules/led-color.js';
+import { ledRgbToColor16, ledColor16ToHex8, ledHexToRgb, ledPreviewPayload } from '../modules/led-color.js';
 import { LED_SEQUENCE_KEY, MIN_STEP_DURATION_MS, MAX_STEP_DURATION_MS, LED_TRIGGER_STATES, parseLedSequence, serializeLedSequence, addStep, removeStep, updateStep, moveStep, toggleTriggerState } from '../modules/led-sequence.js';
 import { requestStart as ledRunRequestStart, requestStop as ledRunRequestStop, forceStop as ledRunForceStop, onRunChange as ledRunOnChange, getRunState as ledRunGetState, onMachineStateChange as ledRunOnMachineStateChange, noteStoredPalette as ledRunNoteStoredPalette } from '../modules/led-strip-runner.js';
 import { isCupWarmerOn, readCupWarmerTarget, clampCupWarmerTarget, clampPrewarmMinutes, resolvePrewarm, prewarmWarnings, prewarmShapeSignature, cupWarmerViewMode, formatCurrentMatTemp, getCupWarmerState, setCupWarmerState, patchCupWarmerState, onCupWarmerStateChange, CUP_WARMER_TARGET_KEY, PREWARM_MIN_MINUTES, PREWARM_MAX_MINUTES } from '../modules/cup-warmer.js';
@@ -24,7 +24,7 @@ import { APP_VERSION, SKIN_ID } from '../version.js';
 import { openNotesModal } from '../modules/notes-modal.js';
 import { openDB, getSetting, setSetting, addEmails, getAllEmails, getLatestEmailTimestamp } from '../modules/idb.js';
 import { openModal, shouldUseNumpad, initializeNumpadModal } from '../modules/numpad-modal.js';
-import { ensureDye2PluginReady, getDye2VersionInfo, installDye2Plugin, offerDye2Update, checkDye2UpdatesIfDue, clearDyeWorkflowContext } from '../modules/dyeStrip.js';
+import { ensureDye2PluginReady, getDye2VersionInfo, installDye2Plugin, offerDye2Update, checkDye2UpdatesIfDue, clearDye2ContextOnDisable } from '../modules/dyeStrip.js';
 import { pluginKeywords, pluginListKeywords, subcategoryMatches, textFromHtml, tokenPattern, HIGHLIGHT_CLASS } from '../modules/settings-search.js';
 import { haYamlBlocks } from '../modules/home-assistant.js';
 import { loadIro } from '../modules/vendor-loader.js';
@@ -81,7 +81,6 @@ const SETTINGS_NUMPAD_CONFIGS = {
     'sleep-timeout-input':       { title: 'SLEEP TIMEOUT',     unit: 'min',  min: 1,   max: 120,  fieldType: 'settings-sleep-timeout' },
     'brightness-number':         { title: 'BRIGHTNESS',        unit: '%',    min: 0,   max: 100,  fieldType: 'settings-brightness' },
     'screensaver-cycle-seconds': { title: 'IMAGE CYCLE',       unit: 'sec',  min: 2,   max: 600,  fieldType: 'settings-screensaver-cycle' },
-    'visualizer-min-duration':   { title: 'MIN SHOT DURATION', unit: 'sec',  min: 1,              fieldType: 'settings-visualizer-min' },
     'keep-awake-hours-input':    { title: 'KEEP AWAKE HOURS',  unit: 'hr',   min: 0,   max: 12,   fieldType: 'settings-keep-awake-hours' },
     'keep-awake-mins-input':     { title: 'KEEP AWAKE MINS',   unit: 'min',  min: 0,   max: 59,   fieldType: 'settings-keep-awake-mins' },
     // Bengle cup-warmer fields -- register so they open the in-app numpad on the
@@ -533,6 +532,8 @@ function updateSettingsContentArea(category) {
             syncBrightnessSliderFill(slider, slider.value);
             refreshBrightnessNotices(Number(slider.value));
         }
+        const saverSlider = contentArea.querySelector('#saver-brightness-slider');
+        if (saverSlider) syncBrightnessSliderFill(saverSlider, saverSlider.value);
         if (category === 'theme') {
             setTimeout(() => {
                 ui.initThemeToggle();
@@ -918,10 +919,6 @@ export function renderSettingsContent(category) {
             return renderPluginManagerSettings();
         case 'shotupload':
             return renderShotUploadSettings();
-        case 'extensions':
-        case 'extention1':
-        case 'extention2':
-            return renderExtensionsSettings();
         case 'screensaver':
             return renderScreenSaverSettings();
         case 'brightness':
@@ -2055,6 +2052,8 @@ export function renderScreenSaverSettings() {
     const hasCustom = screensaverImagesCache.length > 0;
     const cycleSeconds = parseInt(localStorage.getItem('screensaverCycleSeconds'), 10) || 10;
     const blackSaver = isBlackScreenSaver();
+    const customBrightness = isCustomSaverBrightness();
+    const saverBrightness = customBrightness ? getSaverBrightness() : SAVER_BRIGHTNESS_DEFAULT;
     const showClock = localStorage.getItem('screensaverShowClock') !== 'false';
     const clockFormat = resolveScreensaverClockFormat(localStorage.getItem('screensaverClockFormat'));
     const clockPosition = resolveScreensaverClockPosition(localStorage.getItem('screensaverClockPosition'));
@@ -2097,75 +2096,124 @@ export function renderScreenSaverSettings() {
         </p>
     `;
 
-    // Two-column grid so the whole page fits one screen without vertical scroll.
-    const toggle = (label, key, checked, handler, id = '') => `
-        <div class="flex items-center justify-between gap-[20px]">
-            <p class="font-bold text-[var(--text-primary)] text-[26px] leading-[1.2]" data-i18n-key="${key}">${label}</p>
+    // Rows share one rhythm: label left, control flush right at 260px, so every
+    // control on the panel lines up on the same edge whichever card it is in.
+    const switchControl = (checked, handler, id = '') => `
             <label class="relative flex items-center cursor-pointer flex-shrink-0 w-[100px] h-[50px]">
                 <input type="checkbox" class="sr-only peer" ${id ? `id="${id}"` : ''} ${checked ? 'checked' : ''}
                        onchange="${handler}(this.checked)">
                 <div class="absolute inset-0 rounded-full border-2 transition-colors duration-200 bg-[var(--toggle-off-bg)] border-[var(--toggle-off-border)] peer-checked:bg-[var(--button-primary-bg)] peer-checked:border-[var(--button-primary-bg)]"></div>
                 <div class="absolute top-1/2 left-[5px] -translate-y-1/2 peer-checked:translate-x-[46px] size-[40px] rounded-full transition-[transform,background-color] duration-200 bg-[var(--toggle-off-knob)] peer-checked:bg-white"></div>
-            </label>
+            </label>`;
+    const toggle = (label, key, checked, handler, id = '') => `
+        <div class="flex items-center justify-between gap-[20px]">
+            <p class="font-bold text-[var(--text-primary)] text-[24px] leading-[1.2]" data-i18n-key="${key}">${label}</p>${switchControl(checked, handler, id)}
         </div>`;
     const select = (id, label, options, current, handler) => `
         <div class="flex items-center justify-between gap-[20px]">
-            <label for="${id}" class="font-bold text-[var(--text-primary)] text-[26px]" data-i18n-key="${label}">${label}</label>
+            <label for="${id}" class="font-bold text-[var(--text-primary)] text-[24px] leading-[1.2]" data-i18n-key="${label}">${label}</label>
             <select id="${id}"
                     class="select select-bordered w-[260px] text-[20px] bg-[var(--presence-input-bg)] text-[var(--presence-input-text)] border-[var(--presence-input-border)]"
                     onchange="${handler}(this.value)">
                 ${options.map(o => `<option value="${o.value}" ${current === o.value ? 'selected' : ''} data-i18n-key="${o.label}">${o.label}</option>`).join('')}
             </select>
         </div>`;
-    const grid = 'display:grid;grid-template-columns:1fr 1fr;column-gap:60px;row-gap:24px;align-items:center;width:100%;';
+    // 62px and 260px overall, matching the selects rather than standing above them
+    // as a banner -- it is one control among the others, not a second page title.
+    const modeSegment = (black, label) => `
+        <button type="button" class="flex-1 h-[62px] rounded-[12px] font-bold text-[24px] flex items-center justify-center cursor-pointer transition-colors duration-200 ${blackSaver === black ? 'bg-[var(--button-primary-bg)] text-white' : 'bg-[var(--box-color)] border-2 border-[var(--profile-button-outline-color)] text-[var(--text-primary)]'}"
+                aria-pressed="${blackSaver === black}"
+                onclick="window.setBlackScreenSaver(${black})" data-i18n-key="${label}">${getTranslation(label)}</button>`;
+
+    // One card per question the panel answers. Rows are divided rather than boxed
+    // again, so the card is the only container and nesting stays one level deep.
+    const card = (titleKey, rows) => `
+        <div class="rounded-[10px] border border-[var(--border-primary)] p-6 bg-[var(--box-color)] flex flex-col w-full">
+            <p class="font-bold text-[var(--mimoja-blue-v2)] text-[26px] leading-[1.2]" style="padding-bottom:8px" data-i18n-key="${titleKey}">${getTranslation(titleKey)}</p>
+            ${rows.filter(Boolean).map((row, i) => `
+            <div class="py-[16px] ${i ? 'border-t border-[var(--border-primary)]' : ''}">${row}</div>`).join('')}
+        </div>`;
+
+    const styleRow = `
+        <div class="flex items-center justify-between gap-[20px]">
+            <p id="screensaver-style-label" class="font-bold text-[var(--text-primary)] text-[24px] leading-[1.2]" data-i18n-key="Screen saver style">Screen saver style</p>
+            <div class="flex gap-[12px] w-[220px]" role="group" aria-labelledby="screensaver-style-label">
+                ${modeSegment(false, 'Images')}
+                ${modeSegment(true, 'Black')}
+            </div>
+        </div>`;
+
+    // The switch is "set it myself"; the slider below is the setting. One row each,
+    // so the label is not competing with a second label for the same control.
+    const brightnessRows = !blackSaver && brightnessSupported ? [`
+        <div class="flex items-center justify-between gap-[20px]">
+            <p id="saver-brightness-label" class="font-bold text-[var(--text-primary)] text-[24px] leading-[1.2]" data-i18n-key="Screen saver brightness">Screen saver brightness</p>
+            <div class="flex items-center gap-[20px]">
+                <span class="font-bold text-[var(--text-secondary)] text-[22px]" data-i18n-key="Custom">Custom</span>${switchControl(customBrightness, 'window.setCustomSaverBrightness', 'saver-brightness-custom')}
+            </div>
+        </div>`, `
+        <div class="flex items-center gap-[30px] w-full">
+            <input type="range" id="saver-brightness-slider" min="0" max="100" step="1" value="${saverBrightness}"
+                   class="brightness-slider flex-grow" ${customBrightness ? '' : 'disabled'}
+                   aria-labelledby="saver-brightness-label"
+                   oninput="window.setSaverBrightnessLevel(this.value)">
+            <span id="saver-brightness-value" class="text-[var(--text-primary)] text-[24px] text-right" style="width:62px">${saverBrightness}%</span>
+        </div>`] : [];
+
+    const saverCard = card('Screen saver', [
+        styleRow,
+        blackSaver ? '' : toggle('Show screen saver when the machine sleeps', 'Show screen saver when the machine sleeps', enabled, 'window.setScreensaverEnabled'),
+        ...brightnessRows,
+    ]);
+
+    const clockCard = card('Clock', [
+        toggle('Show date and time', 'Show date and time', showClock, 'window.setScreensaverShowClock', 'screensaver-show-clock'),
+        showClock ? select('screensaver-clock-format', 'Clock format', SCREENSAVER_CLOCK_FORMATS, clockFormat, 'window.setScreensaverClockFormat') : '',
+        showClock ? select('screensaver-date-format', 'Date format', SCREENSAVER_DATE_FORMATS, dateFormat, 'window.setScreensaverDateFormat') : '',
+        showClock ? select('screensaver-clock-position', 'Clock position', SCREENSAVER_CLOCK_POSITIONS, clockPosition, 'window.setScreensaverClockPosition') : '',
+    ]);
+
+    // The image deck only exists under the image saver, so it is a whole card
+    // that leaves rather than rows that grey out.
+    const imagesCard = blackSaver ? '' : card('Images', [
+        imageInfo,
+        `<div class="flex items-center justify-between gap-[16px]">
+            <div class="flex items-baseline gap-[14px] font-bold ${screensaverImagesCache.length > 1 ? 'text-[var(--text-primary)]' : 'text-[var(--text-secondary)] opacity-50'} text-[24px]">
+                <p class="leading-[1.2]" data-i18n-key="Change image every:">Change image every:</p>
+            </div>
+            <input type="number"
+                   id="screensaver-cycle-seconds"
+                   min="2"
+                   max="600"
+                   step="1"
+                   value="${cycleSeconds}"
+                   ${screensaverImagesCache.length > 1 ? '' : 'disabled'}
+                   class="w-[140px] h-[62px] px-[20px] rounded-[12px] border-2 border-[var(--mimoja-blue-v2)] bg-[var(--box-color)] text-[var(--text-primary)] text-[24px] text-center disabled:opacity-40 disabled:cursor-not-allowed"
+                   onchange="window.handleScreensaverCycleChange(this.value)">
+        </div>`,
+        `<div class="flex items-center justify-end gap-[16px]">${imageButtons}</div>`,
+    ]);
 
     return `
-        <div class="content-stretch flex flex-col gap-[28px] items-start relative w-full">
+        <div class="content-stretch flex flex-col gap-[40px] items-start relative w-full">
             <div class="flex flex-col font-['Inter:Semi_Bold',sans-serif] font-semibold justify-center leading-[0] min-w-full not-italic relative text-[var(--text-primary)] text-[36px] text-center w-[min-content]">
                 <p class="leading-[1.2]" data-i18n-key="Screen Saver">Screen Saver</p>
             </div>
-
-            <div style="${grid}">
-                ${toggle('Show screen saver when the machine sleeps', 'Show screen saver when the machine sleeps', enabled && !blackSaver, 'window.setScreensaverEnabled')}
-                ${select('screensaver-clock-format', 'Clock format', SCREENSAVER_CLOCK_FORMATS, clockFormat, 'window.setScreensaverClockFormat')}
-                ${toggle('Show date and time', 'Show date and time', showClock, 'window.setScreensaverShowClock', 'screensaver-show-clock')}
-                ${select('screensaver-date-format', 'Date format', SCREENSAVER_DATE_FORMATS, dateFormat, 'window.setScreensaverDateFormat')}
-                ${brightnessSupported ? toggle('Black screen saver', 'Black screen saver', blackSaver, 'window.setBlackScreenSaver', 'black-screen-saver') : '<div></div>'}
-                ${select('screensaver-clock-position', 'Clock position', SCREENSAVER_CLOCK_POSITIONS, clockPosition, 'window.setScreensaverClockPosition')}
-            </div>
-
             <div class="h-0 relative w-full"><hr class="border-t border-[var(--border-primary)] w-full" /></div>
 
-            <div class="w-full">
-                <div class="flex items-center justify-between gap-[16px]">
-                    <p class="font-bold text-[var(--mimoja-blue-v2)] text-[26px] leading-[1.2]">Images</p>
-                    <div class="flex items-center gap-[16px]">
-                        ${imageButtons}
-                    </div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;column-gap:40px;row-gap:24px;align-items:start;width:100%;">
+                <div class="flex flex-col gap-[24px] w-full">
+                    ${saverCard}
+                    ${imagesCard}
                 </div>
-            </div>
-            <div class="w-full">${imageInfo}</div>
-
-            <div class="w-full">
-                <div class="flex items-center justify-between gap-[16px]">
-                    <div class="flex items-baseline gap-[14px] font-bold ${screensaverImagesCache.length > 1 ? 'text-[var(--mimoja-blue-v2)]' : 'text-[var(--text-secondary)] opacity-50'} text-[26px]">
-                        <p class="leading-[1.2]" data-i18n-key="Change image every:">Change image every:</p>
-                        <span class="text-[20px] font-normal opacity-60">(2 – 600s)</span>
-                    </div>
-                    <input type="number"
-                           id="screensaver-cycle-seconds"
-                           min="2"
-                           max="600"
-                           step="1"
-                           value="${cycleSeconds}"
-                           ${screensaverImagesCache.length > 1 ? '' : 'disabled'}
-                           class="w-[140px] h-[62px] px-[20px] rounded-[12px] border-2 border-[var(--mimoja-blue-v2)] bg-[var(--box-color)] text-[var(--text-primary)] text-[24px] text-center disabled:opacity-40 disabled:cursor-not-allowed"
-                           onchange="window.handleScreensaverCycleChange(this.value)">
+                <div class="flex flex-col gap-[24px] w-full">
+                    ${clockCard}
                 </div>
             </div>
 
+            ${blackSaver ? '' : `
             <input type="file" id="screensaver-file-input" class="hidden" multiple accept="image/*"
-                   onchange="window.addScreensaverFiles(this.files)">
+                   onchange="window.addScreensaverFiles(this.files)">`}
         </div>
     `;
 }
@@ -3539,7 +3587,6 @@ let ledPicker = null;          // iro.ColorPicker instance
 let ledPutTimer = null;        // debounce handle for the wheel-driven flush/preview
 let ledError = false;
 let ledPreviewActive = false;  // a live colour is being previewed on the strip
-let ledPaletteDirty = false;   // cross-state edits not yet PUT (deferred to a preview-end seam)
 let ledLastLit = {};           // last lit colour per 'zoneKey:state', restored on power-on
 // Which tab of the Lighting page is showing. The page holds two things with
 // different commitment models -- a palette that persists to the machine
@@ -3922,7 +3969,7 @@ function initLedPicker() {
         const c16 = ledRgbToColor16(color.rgb);
         ledZoneKeys(ledSelectedZone).forEach((k) => { if (ledState[k]) ledState[k][ledSelectedState] = c16; });
         ledUpdateSwatchesDom(color.hexString);
-        ledSchedulePut();
+        ledSchedulePreview();
     });
     ledPicker.on('input:end', () => ledCommitEdit());
 }
@@ -3942,36 +3989,24 @@ function ledUpdateSwatchesDom(hex8) {
 // Every write that changes what the strip SHOWS is funnelled through ONE
 // promise chain, so writes land in enqueue order and can never interleave.
 //
-// There is no preview endpoint on this hardware (see the ledStrip block in
-// api.js). The firmware stores ONE palette and renders the bank matching the
-// machine's wake state, so every write here — previewing a colour the user is
-// dragging, and putting the strip back afterwards — is the same
-// `PUT /machine/ledStrip`, differing only in what payload it carries:
-//   * SAME-STATE edit (editing the bank the machine is rendering): PUT the
-//     working palette itself. What gets stored and what gets shown are the
-//     same thing, so there is nothing to undo — this is just a normal edit.
-//   * CROSS-STATE edit (e.g. picking the asleep colour while the machine is
-//     awake): the strip can only show it by writing it into the AWAKE bank,
-//     which is NOT where the user wants it stored. So those writes carry a
-//     composite (ledPreviewComposite → ledLiveWriteState) that shows the
-//     edited colour while leaving the other bank alone, the real edit is only
-//     marked dirty (ledPaletteDirty), and both are settled at the seams below
-//     by one PUT of the true palette.
+// Decaid exposes a live preview (POST /machine/ledStrip/preview), which lights
+// the strips without touching the four stored palette registers. So the two
+// kinds of write here are genuinely different verbs:
+//   * CHOOSING a colour -> preview. Volatile, invisible to GET /ledStrip, and
+//     the only way to show an asleep colour while the machine is awake.
+//   * SAVING -> PUT /machine/ledStrip + commit. The only thing that persists.
+// Every exit seam owes a preview/clear, or the preview stands until the next
+// sleep/wake transition.
 //
-// The seams — switching zone/state, Save, Reset, leaving the page, popstate —
-// all call ledRestoreStrip(), which is the single "put the strip back to what
-// the user actually has" write. Because a deferred cross-state edit and a live
-// preview both resolve to the SAME payload (the working palette), the seam
-// issues exactly one PUT rather than the flush-then-clear pair the old
-// preview-endpoint design needed.
+// Preview state is never read back from the machine: GET /ledStrip is
+// stored-palette-only by design, so what is lit lives in this page's state.
 //
-// NOTE: PUT persists. Every write here is a firmware write, so the coalescing
-// below is not just about flicker — it is what keeps a wheel drag from
-// becoming hundreds of stored writes.
+// Debounced, not because preview costs a stored write -- it does not -- but
+// because on firmware older than Bengle#114 the live registers are not PERM_RW
+// yet, so a drag across the wheel is a flash write per changed frame.
+
 let ledOpChain = Promise.resolve(); // serialized LED I/O; tail never rejected
 let ledPreviewQueued = false;       // a preview op is queued but not yet started
-let ledFlushQueued = false;         // a palette PUT is queued but not yet started
-let ledFlushPromise = Promise.resolve(); // the queued flush, for coalesced awaiters (Save)
 
 function ledEnqueue(op) {
     const p = ledOpChain.then(op);
@@ -3979,103 +4014,61 @@ function ledEnqueue(op) {
     return p;
 }
 
-// A colour that is NOT the stored palette is on the strip, or a queued op is
-// about to put one there — the exit seams must restore in either case or a
-// late op would latch the strip on a preview colour. A queued ledFlushPut is
-// deliberately NOT counted: it only ever carries the true palette (same-state
-// edits), so it already does what a restore would, and counting it would make
-// every seam after an ordinary edit issue a second identical firmware write.
+// A preview colour is on the strip, or a queued op is about to put one there --
+// the exit seams must clear in either case, or a late op would latch the strip
+// on a preview until the next sleep/wake transition.
 const ledPreviewPending = () => ledPreviewActive || ledPreviewQueued;
 
-// Drive the colour the user is looking at onto the strip: edited zones show
-// the bank being edited, every other zone the bank the machine is rendering.
-// Written into the machine's bank (the only bank that shows) while the other
-// bank is carried through untouched, so the half of the palette the user is
-// NOT looking at is never disturbed. Coalesced: at most one op waits in the
-// chain, and it reads the freshest palette/target state only when it runs.
+// Drive the colour the user is looking at onto the strip. Only the zones being
+// edited are named: preview leaves the stored registers alone, so every other
+// zone keeps showing the stored palette without being mentioned. Coalesced --
+// at most one op waits in the chain, and it reads the freshest state when it
+// runs.
 function ledPushPreview() {
     if (ledPreviewQueued) return;
     ledPreviewQueued = true;
     ledEnqueue(async () => {
         ledPreviewQueued = false;
         if (!ledState) return;
-        const machineBank = ledMachinePaletteState();
-        const { front, back } = ledPreviewComposite(
-            ledState, ledZoneKeys(ledSelectedZone), ledSelectedState, machineBank);
+        const payload = ledPreviewPayload(ledState, ledZoneKeys(ledSelectedZone), ledSelectedState);
+        if (!payload) return; // naming no strip is a 400
         try {
-            await setLedStrip(ledLiveWriteState(ledState, front, back, machineBank));
-            ledPreviewActive = true;
-        } catch (e) { /* preview is a nicety — non-fatal */ }
+            // false = this machine is not a Bengle. The category is already
+            // gated on that (settings-tree bengleOnly), so there is nothing to
+            // report; just stop claiming a preview is lit.
+            ledPreviewActive = await previewLedStrip(payload);
+        } catch (e) { /* preview is a nicety -- non-fatal */ }
     });
 }
 
-function ledSchedulePut() {
+function ledSchedulePreview() {
     if (ledPutTimer) clearTimeout(ledPutTimer);
     ledPutTimer = setTimeout(() => {
         ledPutTimer = null;
-        // The user may leave the page inside the debounce window; a late write
-        // would land after the exit seam's clear and latch a preview colour.
+        // The user may leave the page inside the debounce window; a late
+        // preview would land after the exit seam's clear and latch a colour.
         if (activeSettingsCategory !== 'ledstrip') return;
-        if (ledSelectedState === ledMachinePaletteState()) {
-            ledFlushPut(); // same-state: the PUT itself repaints the strip correctly
-        } else {
-            ledPushPreview(); // cross-state: preview only — no PUT between moves
-        }
+        ledPushPreview();
     }, 120);
 }
 
-// Commit an edit gesture (wheel release, preset tap, power toggle).
-// Same-state: PUT the working palette now — what is stored and what is shown
-// are the same colour, so this is just the edit landing.
-// Cross-state: the edit must NOT be written to the bank the machine renders,
-// so mark it dirty and land the final wheel position as one more coalesced
-// preview write; ledRestoreStrip() at the next seam writes the real palette.
+// Commit an edit gesture (wheel release, preset tap, power toggle). The edit
+// lives in ledState and on the strip as a preview; only Save writes it to the
+// machine, which is what the Save/Reset pair on this page has always implied.
 function ledCommitEdit() {
     if (ledPutTimer) { clearTimeout(ledPutTimer); ledPutTimer = null; }
-    // Same late-write guard as ledSchedulePut: with multi-touch, input:end can
+    // Same late-write guard as ledSchedulePreview: with multi-touch, input:end can
     // fire AFTER an exit seam (one finger navigates while another still holds
-    // the wheel) — a late commit would re-write a preview after that seam's
-    // restore and latch it on the strip until the next navigation event.
+    // the wheel) -- a late preview would survive that seam's clear.
     if (activeSettingsCategory !== 'ledstrip') return;
-    if (ledSelectedState === ledMachinePaletteState()) {
-        ledFlushPut();
-    } else {
-        ledPaletteDirty = true;
-        ledPushPreview();
-    }
+    ledPushPreview();
 }
 
-// PUT the working palette. Same-state edit path: the payload IS what the strip
-// should show, so there is nothing to chase it with. Returns a promise that
-// resolves once the write has landed (Save awaits it).
-function ledFlushPut() {
-    if (ledPutTimer) { clearTimeout(ledPutTimer); ledPutTimer = null; }
-    if (!ledState) return Promise.resolve();
-    if (ledFlushQueued) return ledFlushPromise; // the queued op reads fresh state when it runs
-    ledFlushQueued = true;
-    ledFlushPromise = ledEnqueue(async () => {
-        ledFlushQueued = false;
-        if (!ledState) return;
-        ledPaletteDirty = false; // this PUT carries the full current palette
-        ledPreviewActive = false; // ...and it carries it to BOTH banks: nothing is overridden
-        // The front-switch LED can't be set independently — it mirrors the front strip.
-        ledState.frontSwitch = { awake: ledState.frontStrip.awake, sleeping: ledState.frontStrip.sleeping };
-        ledRunNoteStoredPalette(ledState); // a running sequence must restore THIS, not the pre-edit palette
-        try { await setLedStrip(ledState); } catch (e) { /* non-fatal */ }
-    });
-    return ledFlushPromise;
-}
-
-// PUT the working palette, unconditionally. The seam write and the pre-save
-// write are the same operation: whatever the strip is currently showing, this
-// puts the user's real palette (both banks) back on it.
 function ledPutPalette() {
     if (ledPutTimer) { clearTimeout(ledPutTimer); ledPutTimer = null; }
-    if (!ledState) { ledPaletteDirty = false; return Promise.resolve(); }
+    if (!ledState) return Promise.resolve();
     return ledEnqueue(() => {
         if (!ledState) return;
-        ledPaletteDirty = false;
-        ledPreviewActive = false;
         // The front-switch LED can't be set independently — it mirrors the front strip.
         ledState.frontSwitch = { awake: ledState.frontStrip.awake, sleeping: ledState.frontStrip.sleeping };
         ledRunNoteStoredPalette(ledState);
@@ -4083,15 +4076,15 @@ function ledPutPalette() {
     });
 }
 
-// The single exit-seam write: put the strip back to the palette the user
-// actually has. Covers both things a seam has to settle — a deferred
-// cross-state edit and a live preview override — because both resolve to the
-// same payload, so one PUT does the work the old flush-then-clear pair did.
-// No-op when nothing is pending, so calling it at every seam is safe.
+// The single exit seam: end the preview so the strip shows what is actually
+// stored. Unsaved edits stay in ledState -- leaving the picker is not a save,
+// and with a real preview endpoint nothing was written to the machine to undo.
+// No-op when nothing is lit, so calling it at every seam is safe.
 function ledRestoreStrip() {
-    if (!ledPaletteDirty && !ledPreviewPending()) return;
+    if (!ledPreviewPending()) return;
     ledPreviewActive = false;
-    ledPutPalette();
+    if (ledPutTimer) { clearTimeout(ledPutTimer); ledPutTimer = null; }
+    ledEnqueue(() => clearLedStripPreview().catch(() => { /* non-fatal */ }));
 }
 
 // Browser/OS back navigation exits settings through the router's popstate
@@ -4101,7 +4094,7 @@ function ledRestoreStrip() {
 // Same restore as the Cancel/Save seams; it is a no-op when nothing is
 // pending, so firing on every popstate is safe. The settings DOM is being
 // torn down, so no category is active any more — dropping
-// activeSettingsCategory also disarms the late-write guards (ledSchedulePut,
+// activeSettingsCategory also disarms the late-write guards (ledSchedulePreview,
 // ledCommitEdit) and lets the cup-warmer poll self-stop on its next tick.
 // Module-level: registered once, not per initializeSettings call.
 window.addEventListener('popstate', () => {
@@ -4255,32 +4248,33 @@ window.ledSelectTab = function(tabId) {
     if (activeSettingsCategory === 'ledstrip') updateSettingsContentArea('ledstrip');
 };
 window.ledSave = async function() {
-    // One PUT of the working palette (which also clears any preview override),
-    // then the contract's persist verb. The PUT is what actually persists --
-    // commitLedStrip is a documented no-op today (see api.js) and is kept only
-    // so the call site still reads as "save" if commit ever regains meaning.
+    // The one write that persists: PUT the working palette, then the contract's
+    // persist verb. Clearing the preview afterwards is what makes the strip show
+    // what was actually stored -- a cross-state edit (an asleep colour picked
+    // while awake) must stop being lit at that point, not linger until the next
+    // sleep/wake transition.
     try {
         await ledPutPalette();
         await commitLedStrip();
+        ledRestoreStrip();
         ledCommitted = JSON.stringify(ledState);
         ui.showToast(getTranslation('Lighting saved'), 2000, 'success');
     } catch (e) { ui.showToast(getTranslation('Failed to save lighting'), 3000, 'error'); }
 };
-// Revert to the palette as it was at the last load or Save, and write it back.
+// Revert to the palette as it was at the last load or Save.
+//
+// Nothing has to be written to get there: choosing a colour only previews, so
+// the machine still holds exactly this palette. Clearing the preview is the
+// whole job -- the strip goes back to the stored colours on its own.
 //
 // This deliberately does NOT use `POST /machine/ledStrip/reset`. That endpoint
-// re-READS the firmware registers; it is not a rollback, and the firmware
-// cannot undo a persisted write (see api.js). Since every edit here is written
-// through immediately, re-reading would just hand back the edits the user is
-// trying to discard -- or, mid-preview, promote a preview colour to "saved".
-// `ledCommitted` is the honest revert target: it is the palette this page
-// loaded from the machine, refreshed on every successful Save.
+// re-READS the firmware registers; it is not a rollback. `ledCommitted` is the
+// honest revert target: the palette this page loaded, refreshed on every Save.
 window.ledReset = function() {
     if (!ledCommitted) return;
     try {
         ledState = ledNormalize(JSON.parse(ledCommitted));
-        ledPaletteDirty = false; // deferred edits are discarded with the rest
-        ledPutPalette();
+        ledRestoreStrip();
         if (activeSettingsCategory === 'ledstrip') updateSettingsContentArea('ledstrip');
         ui.showToast(getTranslation('Lighting reset'), 2000, 'success');
     } catch (e) { ui.showToast(getTranslation('Failed to reset lighting'), 3000, 'error'); }
@@ -6273,7 +6267,7 @@ function setupShotUploadListeners() {
             return;
         }
         // The page can be left while those awaits are in flight, which drops the
-        // form -- same hazard loadVisualizerSettings guards against.
+        // form -- an async load must not paint a page that is gone.
         if (!document.getElementById('shotupload-controls')) return;
 
         const schema = plugin.settings && typeof plugin.settings === 'object' ? plugin.settings : {};
@@ -6322,99 +6316,6 @@ function setupShotUploadListeners() {
             this.disabled = false;
         });
     })();
-}
-
-// Render extensions settings
-export function renderExtensionsSettings() {
-    // Return the HTML template
-    const template = `
-        <div class="content-stretch flex flex-col gap-[60px] items-start relative w-full">
-            <div class="flex flex-col font-['Inter:Semi_Bold',sans-serif] font-semibold justify-center leading-[0] min-w-full not-italic relative text-[var(--text-primary)] text-[36px] text-center w-[min-content]">
-                <p class="leading-[1.2]" data-i18n-key="Extensions Settings">Extensions Settings</p>
-            </div>
-
-            <div class="content-stretch flex flex-col items-start relative w-full">
-                <div class="content-stretch flex flex-col gap-[30px] items-start relative w-full">
-                    <div class="content-stretch flex items-center justify-between relative w-full">
-                        <div class="flex flex-col font-['Inter:Bold',sans-serif] font-bold justify-center leading-[0] not-italic relative text-[var(--mimoja-blue-v2)] text-[30px]">
-                            <p class="leading-[1.2]" data-i18n-key="Visualizer">Visualizer</p>
-                             <p class="font-['Inter:Regular',sans-serif] font-normal leading-[1.4] not-italic relative text-[var(--text-primary)] text-[24px] w-full" data-i18n-key="Upload shots to visualizer.coffee">
-                        Upload shots to visualizer.coffee
-                    </p>
-                        </div>
-                        <label class="relative flex items-center cursor-pointer flex-shrink-0 w-[100px] h-[50px]">
-                            <input type="checkbox" id="visualizer-enabled" class="sr-only peer">
-                            <div class="absolute inset-0 rounded-full border-2 transition-colors duration-200 bg-[var(--toggle-off-bg)] border-[var(--toggle-off-border)] peer-checked:bg-[var(--button-primary-bg)] peer-checked:border-[var(--button-primary-bg)]"></div>
-                            <div class="absolute top-1/2 left-[5px] -translate-y-1/2 peer-checked:translate-x-[46px] size-[40px] rounded-full transition-[transform,background-color] duration-200 bg-[var(--toggle-off-knob)] peer-checked:bg-white"></div>
-                        </label>
-                    </div>
-
-                    <div class="justify-between grid-cols-4 mt-2 w-full">
-                        <div id="visualizer-form-container" class="w-full mt-6">
-                            <div class="flex flex-col gap-8 w-full">
-                                <!-- Account: credentials side by side, the server tucked under Advanced -->
-                                <div class="flex flex-col gap-6">
-                                    <div class="grid grid-cols-2 gap-6">
-                                    <div class="flex flex-col gap-2">
-                                        <label for="visualizer-username" class="text-[var(--text-primary)] text-[24px]" data-i18n-key="Username:">Username:</label>
-                                        <input type="text" id="visualizer-username" class="w-full p-3 rounded-lg border border-[var(--border-color)] bg-[var(--profile-button-background-color)] text-[var(--text-primary)] text-[24px] focus:outline-none focus:ring-2 focus:ring-[var(--mimoja-blue-v2)]" placeholder="Enter your Visualizer username">
-                                    </div>
-                                    <div class="flex flex-col gap-2">
-                                        <label for="visualizer-password" class="text-[var(--text-primary)] text-[24px]" data-i18n-key="Password:">Password:</label>
-                                        <input type="password" id="visualizer-password" class="w-full p-3 rounded-lg border border-[var(--border-color)] bg-[var(--profile-button-background-color)] text-[var(--text-primary)] text-[24px] focus:outline-none focus:ring-2 focus:ring-[var(--mimoja-blue-v2)]" placeholder="Enter your Visualizer password">
-                                    </div>
-                                    </div>
-                                    <details id="visualizer-advanced" class="w-full">
-                                        <summary class="cursor-pointer text-[var(--text-primary)] text-[24px]" data-i18n-key="Advanced">Advanced</summary>
-                                    <div class="flex flex-col gap-2 mt-4">
-                                        <label for="visualizer-server" class="text-[var(--text-primary)] text-[24px]" data-i18n-key="Server:">Server:</label>
-                                        <input type="url" id="visualizer-server" inputmode="url" autocomplete="off" autocapitalize="off" spellcheck="false" class="w-full p-3 rounded-lg border border-[var(--border-color)] bg-[var(--profile-button-background-color)] text-[var(--text-primary)] text-[24px] focus:outline-none focus:ring-2 focus:ring-[var(--mimoja-blue-v2)]" placeholder="${VISUALIZER_DEFAULT_SERVER}">
-                                        <p id="visualizer-server-status" class="text-[var(--text-primary)] text-[20px]"></p>
-                                    </div>
-                                    </details>
-                                </div>
-                                <!-- Uploads: the switch and its threshold side by side -->
-                                <div class="grid grid-cols-2 gap-6 items-center">
-                                    <div class="flex items-center justify-between gap-6">
-                                        <div class="flex flex-col">
-                                            <label for="visualizer-auto-upload" class="text-[var(--text-primary)] text-[24px]" data-i18n-key="Auto-upload shots to Visualizer">Auto-upload shots to Visualizer</label>
-                                            <p class="text-[var(--text-primary)] text-[20px]" data-i18n-key="Off: long-press the shot history panel to upload a shot yourself.">Off: long-press the shot history panel to upload a shot yourself.</p>
-                                        </div>
-                                        <label class="relative flex items-center cursor-pointer flex-shrink-0 w-[100px] h-[50px]">
-                                            <input type="checkbox" id="visualizer-auto-upload" class="sr-only peer">
-                                            <div class="absolute inset-0 rounded-full border-2 transition-colors duration-200 bg-[var(--toggle-off-bg)] border-[var(--toggle-off-border)] peer-checked:bg-[var(--button-primary-bg)] peer-checked:border-[var(--button-primary-bg)]"></div>
-                                            <div class="absolute top-1/2 left-[5px] -translate-y-1/2 peer-checked:translate-x-[46px] size-[40px] rounded-full transition-[transform,background-color] duration-200 bg-[var(--toggle-off-knob)] peer-checked:bg-white"></div>
-                                        </label>
-                                    </div>
-                                    <div class="flex items-center gap-4">
-                                        <label for="visualizer-min-duration" class="text-[var(--text-primary)] text-[24px]" data-i18n-key="Minimum Shot Duration (seconds):">Minimum Shot Duration (seconds):</label>
-                                        <input type="number" id="visualizer-min-duration" class="w-24 p-3 rounded-lg border border-[var(--border-color)] bg-[var(--profile-button-background-color)] text-[var(--text-primary)] text-[24px] focus:outline-none focus:ring-2 focus:ring-[var(--mimoja-blue-v2)]" min="1" value="5">
-                                    </div>
-                                </div>
-                                <div class="flex justify-end">
-                                    <button id="save-visualizer-credentials" class=" w-[150px] h-[50px] pt-3 pb-[15px] border border-solid border-[var(--mimoja-blue-v2)] text-[var(--profile-button-text-color)] rounded-[22.5px]">
-                                        Save Credentials
-                                    </button>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                    </div>
-
-                   
-
-                    
-                </div>
-            </div>
-
-            
-        </div>
-    `;
-
-    // After returning the template, set up the event listeners
-    setTimeout(setupVisualizerEventListeners, 0);
-
-    return template;
 }
 
 // Some plugins append their own ui URL to the end of their description
@@ -6835,322 +6736,6 @@ function setupPluginCard(cardEl, pluginId, plugins) {
             },
         });
     })();
-}
-
-
-// Whether the visualizer plugin currently has a stored (secure) password.
-// PR #588: secure values are returned as { isSet } state, never plaintext.
-let visualizerPasswordIsSet = false;
-
-// What the plugin has stored, as last loaded: the server the credentials belong
-// to, and whether it can take a different one at all. The form is judged against
-// this -- never against what is merely typed.
-let visualizerSaved = { url: VISUALIZER_DEFAULT_SERVER, username: '', passwordIsSet: false, supported: false };
-let visualizerLoadSeq = 0; // a load that outlives its page must not paint a later one
-
-const VISUALIZER_PASSWORD_PLACEHOLDER = 'Enter your Visualizer password';
-
-// Re-judge the form after the server field changes. A different server drops
-// the previous account's username and masked password -- they were never valid
-// there -- while typing the saved server back restores them. Returns the plan.
-function applyVisualizerServerForm() {
-    const serverInput = document.getElementById('visualizer-server');
-    const usernameInput = document.getElementById('visualizer-username');
-    const passwordInput = document.getElementById('visualizer-password');
-    const statusEl = document.getElementById('visualizer-server-status');
-    if (!serverInput || !usernameInput || !passwordInput) return null;
-
-    const plan = planServerChange({ input: serverInput.value, activeUrl: visualizerSaved.url, supported: visualizerSaved.supported });
-    const same = plan.state === 'same';
-    if (plan.state !== 'invalid' && plan.state !== 'unsupported') {
-        const wasSame = usernameInput.dataset.server !== 'other';
-        if (same && !wasSame) usernameInput.value = visualizerSaved.username;
-        if (!same && wasSame) usernameInput.value = '';
-        usernameInput.dataset.server = same ? 'saved' : 'other';
-        if (!same) passwordInput.value = '';
-        visualizerPasswordIsSet = same && visualizerSaved.passwordIsSet;
-        passwordInput.placeholder = visualizerPasswordIsSet
-            ? 'Password saved — leave empty to keep'
-            : VISUALIZER_PASSWORD_PLACEHOLDER;
-    }
-    if (statusEl) {
-        statusEl.textContent = plan.error
-            || (same ? `Active server: ${visualizerSaved.url}` : `New server: enter your username and password for ${plan.url}`);
-    }
-    return plan;
-}
-
-// Function to set up event listeners for the Visualizer settings
-function setupVisualizerEventListeners() {
-    const saveButton = document.getElementById('save-visualizer-credentials');
-    const usernameInput = document.getElementById('visualizer-username');
-    const passwordInput = document.getElementById('visualizer-password');
-    const autoUploadCheckbox = document.getElementById('visualizer-auto-upload');
-    const minDurationInput = document.getElementById('visualizer-min-duration');
-    const statusDiv = document.getElementById('visualizer-status');
-    const formContainer = document.getElementById('visualizer-form-container');
-    const enabledToggle = document.getElementById('visualizer-enabled');
-
-    if (!saveButton) {
-        console.warn('Save button for Visualizer credentials not found');
-        return;
-    }
-
-    // Load existing settings when the form loads
-    loadVisualizerSettings();
-
-    const serverInput = document.getElementById('visualizer-server');
-    if (serverInput) {
-        serverInput.addEventListener('input', applyVisualizerServerForm);
-        serverInput.addEventListener('change', applyVisualizerServerForm);
-    }
-
-    // Initially hide the form if the Visualizer integration is off
-    if (enabledToggle && formContainer && !enabledToggle.checked) {
-        formContainer.style.display = 'none';
-    }
-
-    // Two independent switches over the plugin's one AutoUpload flag: the master
-    // toggle is the integration itself (credentials form, manual upload from the
-    // shot history), the inner one is whether a finished shot goes up by itself.
-    // visualizer.js writes the AND of the two to the plugin.
-    if (enabledToggle) {
-        enabledToggle.addEventListener('change', async function() {
-            const isEnabled = this.checked;
-            if (formContainer) formContainer.style.display = isEnabled ? 'block' : 'none';
-            try {
-                const { setVisualizerEnabled } = await import('../modules/visualizer.js');
-                await setVisualizerEnabled(isEnabled);
-                ui.showToast(`${getTranslation('Visualizer')} ${isEnabled ? getTranslation('Enabled') : getTranslation('Disabled')}`, 1500, 'success');
-            } catch (error) {
-                console.error('Failed to save Visualizer state:', error);
-                ui.showToast('Failed to update Visualizer state', 2000, 'error');
-            }
-        });
-    }
-
-    if (autoUploadCheckbox) {
-        autoUploadCheckbox.addEventListener('change', async function() {
-            const isAutoUpload = this.checked;
-            try {
-                const { setAutoUpload } = await import('../modules/visualizer.js');
-                await setAutoUpload(isAutoUpload);
-                ui.showToast(
-                    isAutoUpload
-                        ? getTranslation('Shots upload automatically')
-                        : getTranslation('Upload shots from the history long-press menu'),
-                    2000,
-                    'success'
-                );
-            } catch (error) {
-                console.error('Failed to save Visualizer auto-upload state:', error);
-                ui.showToast('Failed to update auto-upload', 2000, 'error');
-            }
-        });
-    }
-
-    // Add click handler for the save button
-    saveButton.addEventListener('click', async () => {
-        if (saveButton.disabled) return;
-        const username = usernameInput.value.trim();
-        const password = passwordInput.value; // Don't trim password as spaces might be valid
-
-        const plan = applyVisualizerServerForm();
-        if (!plan || plan.error) {
-            const advanced = document.getElementById('visualizer-advanced');
-            if (advanced) advanced.open = true;
-            ui.showToast(plan?.error || 'Visualizer settings are not ready', 3500, 'error');
-            return;
-        }
-        // A server the saved credentials don't belong to needs its own
-        // password, verified there, before anything is stored.
-        const serverChanged = plan.state === 'changed';
-        if (serverChanged && !password) {
-            ui.showToast('Enter your password for the new Visualizer server', 3000, 'error');
-            return;
-        }
-        // Always name the server when the plugin supports one: omitting it for
-        // the hosted default would verify against the plugin's stored custom
-        // server instead. An older plugin never sees the field.
-        const serverForVerify = visualizerSaved.supported ? plan.url : undefined;
-
-        if (!username) {
-            ui.showToast('Please enter your Visualizer username', 1500, 'error');
-            return;
-        }
-
-        // Settings POST is a patch (Decaid #588): a typed password sets the
-        // credential, an empty field preserves the stored one via the isSet
-        // marker, an empty field with nothing stored leaves it unset.
-        let passwordPayload;
-        if (password) {
-            try {
-                // Import verifyVisualizerCredentials from api.js
-                const { verifyVisualizerCredentials } = await import('../modules/api.js');
-
-                saveButton.disabled = true;
-                let result;
-                try {
-                    result = await verifyVisualizerCredentials(username, password, serverForVerify);
-                } finally {
-                    saveButton.disabled = false;
-                }
-
-                if (!result.valid) {
-                    // error = the check itself failed (unreachable, TLS, plugin);
-                    // otherwise the server answered and said no.
-                    ui.showToast(
-                        result.error
-                            ? `Could not reach ${plan.url}: ${result.error}`
-                            : 'Visualizer log-in failed, check credentials',
-                        result.error ? 5000 : 900, 'error');
-                    return; // Stop here if credentials are bad
-                }
-
-                ui.showToast('Visualizer log-in success', 900, 'success');
-            } catch (error) {
-                console.error('Error during credential validation:', error);
-                ui.showToast(`Error validating credentials: ${error.message}`, 3000, 'error');
-                return;
-            }
-            passwordPayload = password;
-        } else {
-            passwordPayload = { isSet: visualizerPasswordIsSet }; // preserve current state
-        }
-
-        // Proceed to save to plugin
-        const autoUpload = autoUploadCheckbox.checked;
-        const minDuration = parseInt(minDurationInput.value, 10) || 5;
-
-        // 1. Save UI-only settings to localStorage
-        localStorage.setItem('visualizerAutoUpload', autoUpload.toString());
-
-        // 2. Prepare and save plugin settings - use correct field names expected by visualizer plugin manifest
-        const { setPluginSettings } = await import('../modules/api.js');
-        const { isAutoUploadEnabled } = await import('../modules/visualizer.js');
-        const pluginId = 'visualizer.reaplugin';
-
-        const settingsPayload = {
-            Username: username,
-            Password: passwordPayload,
-            // Both switches gate it — saving credentials must not start uploads
-            // while the integration itself is switched off.
-            AutoUpload: isAutoUploadEnabled(),
-            LengthThreshold: minDuration
-        };
-        // Only a backend that declares the setting is sent it; an older one
-        // would drop it and keep talking to the hosted server.
-        if (visualizerSaved.supported) settingsPayload[VISUALIZER_SERVER_SETTING] = plan.url;
-
-        try {
-            await setPluginSettings(pluginId, settingsPayload);
-            visualizerSaved = {
-                ...visualizerSaved,
-                url: plan.url,
-                username,
-                passwordIsSet: !!password || (visualizerPasswordIsSet && !serverChanged),
-            };
-            visualizerPasswordIsSet = visualizerSaved.passwordIsSet;
-            const pw = document.getElementById('visualizer-password');
-            if (pw && document.body.contains(saveButton)) {
-                pw.value = '';
-                applyVisualizerServerForm();
-            }
-            ui.showToast('Visualizer settings saved successfully', 3000, 'success');
-        } catch (error) {
-            console.error('Failed to save visualizer plugin settings:', error);
-            ui.showToast(`Failed to save plugin settings: ${error.message}`, 3000, 'error');
-        }
-    });
-}
-
-// Function to load existing Visualizer settings
-async function loadVisualizerSettings() {
-    const seq = ++visualizerLoadSeq;
-    try {
-        const { getPluginSettings, getPlugins } = await import('../modules/api.js');
-        const pluginId = 'visualizer.reaplugin';
-
-        const [savedSettings, plugins] = await Promise.all([getPluginSettings(pluginId), getPlugins()]);
-        if (seq !== visualizerLoadSeq) return;
-        const plugin = Array.isArray(plugins) ? plugins.find(p => p.id === pluginId) : null;
-        const supported = pluginSupportsCustomServer(plugin);
-
-        const usernameInput = document.getElementById('visualizer-username');
-        const passwordInput = document.getElementById('visualizer-password');
-        const autoUploadCheckbox = document.getElementById('visualizer-auto-upload');
-        const minDurationInput = document.getElementById('visualizer-min-duration');
-        const formContainer = document.getElementById('visualizer-form-container');
-        const enabledToggle = document.getElementById('visualizer-enabled');
-
-        // The awaits above can outlive the page: leaving the Visualizer sub-page
-        // re-renders the content area and drops the form, so by the time settings
-        // arrive these lookups return null. Nothing to populate — bail.
-        if (!usernameInput || !passwordInput || !autoUploadCheckbox || !minDurationInput) return;
-
-        if (savedSettings && savedSettings.Username) {
-            usernameInput.value = savedSettings.Username;
-        } else {
-            usernameInput.value = '';
-        }
-
-        // Always clear the password field for security
-        passwordInput.value = '';
-
-        // Secure values are returned as { isSet } state, never plaintext (Decaid #588).
-        const passwordVal = savedSettings?.Password;
-        visualizerPasswordIsSet = passwordVal != null &&
-            (typeof passwordVal === 'object' ? passwordVal.isSet === true : !!passwordVal);
-        // An older Decaid has no server setting and talks to the hosted server.
-        const savedUrl = supported ? normalizeServerUrl(savedSettings?.[VISUALIZER_SERVER_SETTING]) : null;
-        visualizerSaved = {
-            url: savedUrl?.ok ? savedUrl.url : VISUALIZER_DEFAULT_SERVER,
-            username: savedSettings?.Username || '',
-            passwordIsSet: visualizerPasswordIsSet,
-            supported,
-        };
-        const serverInput = document.getElementById('visualizer-server');
-        if (serverInput) {
-            serverInput.value = visualizerSaved.url === VISUALIZER_DEFAULT_SERVER ? '' : visualizerSaved.url;
-            serverInput.disabled = !supported;
-            serverInput.title = supported ? '' : 'Update Decaid to use a custom Visualizer server';
-        }
-        // Hosted users never see the field; a custom server is shown open.
-        const advanced = document.getElementById('visualizer-advanced');
-        if (advanced) advanced.open = visualizerSaved.url !== VISUALIZER_DEFAULT_SERVER;
-        usernameInput.dataset.server = 'saved';
-        applyVisualizerServerForm();
-
-        // The master switch used to be the plugin's AutoUpload flag and nothing
-        // else, so it left no key of its own behind: for an existing install,
-        // "configured" (a username is stored) means the integration is on.
-        if (localStorage.getItem('visualizerEnabled') === null) {
-            localStorage.setItem('visualizerEnabled', String(!!savedSettings?.Username));
-        }
-        const isEnabled = localStorage.getItem('visualizerEnabled') === 'true';
-
-        // Auto-upload keeps the user's own choice even while the master switch is
-        // off (the plugin flag is then false, and says nothing about the choice).
-        const storedAutoUpload = localStorage.getItem('visualizerAutoUpload');
-        const autoUploadValue = storedAutoUpload !== null
-            ? storedAutoUpload === 'true'
-            : (typeof savedSettings.AutoUpload !== 'undefined' ? !!savedSettings.AutoUpload : true);
-        autoUploadCheckbox.checked = autoUploadValue;
-        if (enabledToggle) enabledToggle.checked = isEnabled;
-
-        // Visualizer plugin uses 'Length' not 'LengthThreshold'
-        if (typeof savedSettings.Length !== 'undefined') {
-            minDurationInput.value = parseInt(savedSettings.Length, 10) || 5;
-        }
-
-        // Set form visibility based on the master switch
-        if (formContainer) {
-            formContainer.style.display = isEnabled ? 'block' : 'none';
-        }
-    } catch (error) {
-        console.error('Failed to load Visualizer settings:', error);
-        ui.showToast('Could not load Visualizer plugin settings', 3000, 'error');
-    }
 }
 
 export function renderMachineInformationSettings() {
@@ -7735,9 +7320,9 @@ export function subcategoriesFor(mainCategoryKey) {
     const statics = (category?.subcategories || []).filter(subcat => !subcat.bengleOnly || isBengleMachine());
     if (mainCategoryKey !== 'extensions') return statics;
 
-    // Visualizer and Shot Uploader already have hand-built pages of their own
-    // (credentials, account linking) that the generic card cannot replace, so
-    // they must not also appear as a second, poorer row for the same plugin.
+    // Shot Uploader already has a hand-built page of its own (account linking)
+    // that the generic card cannot replace, so it must not also appear as a
+    // second, poorer row for the same plugin.
     const dedicated = new Set(Object.values(PLUGIN_BACKED_SUBCATEGORIES));
     const pluginRows = extensionPluginNavEntries().filter(row => !dedicated.has(row.pluginId));
     // The aggregate Plugins page is the fallback for "no plugins, or the bridge
@@ -8061,10 +7646,6 @@ export async function initializeSettings({ initialMainCategory = null, initialCa
     const saveBtn = document.getElementById('save-settings-btn');
     if (saveBtn) {
         saveBtn.addEventListener('click', async () => {
-            const visualizerAutoUpload = document.getElementById('visualizer-auto-upload');
-            if (visualizerAutoUpload) {
-                localStorage.setItem('visualizerAutoUpload', visualizerAutoUpload.checked.toString());
-            }
             try {
                 await flushPendingChanges();
             } catch (error) {
@@ -8184,6 +7765,9 @@ export async function initializeSettings({ initialMainCategory = null, initialCa
 
     window.setScreensaverShowClock = function(enabled) {
         ui.setScreensaverClockEnabled(enabled);
+        // The clock format, date format and position rows only exist while the
+        // clock does, so this toggle has to repaint the panel.
+        if (activeSettingsCategory) updateSettingsContentArea(activeSettingsCategory);
     };
 
     window.setScreensaverClockFormat = function(format) {
@@ -8206,6 +7790,10 @@ export async function initializeSettings({ initialMainCategory = null, initialCa
     };
 
     window.setBlackScreenSaver = function(enabled) {
+        // The Images|Black segment calls this on every tap, including a tap on the
+        // segment already selected. Writing screensaverEnabled below on a no-op tap
+        // would silently switch the saver back on for someone who had turned it off.
+        if (isBlackScreenSaver() === !!enabled) return;
         apiSetBlackScreenSaver(enabled);
         // Either/or: a black cover IS the screen saver, so switching it on turns
         // the image saver off. Switching it off hands the image saver back.
@@ -8221,6 +7809,22 @@ export async function initializeSettings({ initialMainCategory = null, initialCa
         // applied on the next sleep -- changing it must not dim the screen being read.
         ui.showToast(getTranslation('Saved'), 2000, 'success');
         if (activeSettingsCategory) updateSettingsContentArea(activeSettingsCategory);
+    };
+
+    window.setCustomSaverBrightness = function(enabled) {
+        setCustomSaverBrightnessEnabled(enabled);
+        if (activeSettingsCategory) updateSettingsContentArea(activeSettingsCategory);
+    };
+
+    window.setSaverBrightnessLevel = function(value) {
+        const level = setSaverBrightness(value);
+        const slider = document.getElementById('saver-brightness-slider');
+        if (slider) {
+            slider.value = level;
+            syncBrightnessSliderFill(slider, level);
+        }
+        const readout = document.getElementById('saver-brightness-value');
+        if (readout) readout.textContent = `${level}%`;
     };
 
     window.setWaterTankUnit = function(unit) {
@@ -8438,7 +8042,7 @@ export async function initializeSettings({ initialMainCategory = null, initialCa
                 // ponytail: covers the switch in this skin only -- disabling DYE2
                 // from Decaid's own settings page bypasses it. Move to
                 // PluginLoaderService.disablePlugin upstream if that path matters.
-                if (pluginId === DYE2_PLUGIN_ID) await clearDyeWorkflowContext({ includeGrinderSetting: true });
+                if (pluginId === DYE2_PLUGIN_ID) await clearDye2ContextOnDisable();
                 await disablePlugin(pluginId);
             }
             if (label) label.textContent = enable ? 'Enabled' : 'Disabled';
@@ -9697,7 +9301,6 @@ export async function initializeSettings({ initialMainCategory = null, initialCa
 // Pages that ARE one plugin's settings UI, so that plugin's vocabulary belongs on
 // them specifically as well as on the Plugins list.
 const PLUGIN_BACKED_SUBCATEGORIES = {
-    extention1: 'visualizer.reaplugin',
     shotupload: 'shot-upload.reaplugin',
 };
 

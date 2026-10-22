@@ -11,6 +11,11 @@ import { deriveDisplayAction, isScreensaverSuppressed } from './screensaver-poli
 import { splitNdjson, advanceFirmwareState, initialFirmwareState } from './firmware-progress.js';
 import { parseSse } from './derek-stream.js';
 import { selectedRecipeSteamTemp } from './dye-selection.js';
+import {
+    SAVER_BRIGHTNESS_KEY, SAVER_BRIGHTNESS_CUSTOM_KEY,
+    resolveSaverBrightness, parseSaverBrightnessSetting,
+} from './saver-brightness.js';
+export { SAVER_BRIGHTNESS_DEFAULT } from './saver-brightness.js';
 
 export let reaHostname = localStorage.getItem('reaHostname') || window.location.hostname;
 export const REA_PORT = 8080;
@@ -536,7 +541,12 @@ export function connectWebSocket(onData, onReconnect) {
             
             previousMachineState = currentMachineState;
             currentMachineState = stateValue;
-            if (previousMachineState === 'espresso' && stateValue !== 'espresso') espressoEndedAt = Date.now();
+            if (previousMachineState === 'espresso' && stateValue !== 'espresso') {
+                espressoEndedAt = Date.now();
+                // A profile switch asked for during the shot was held rather than
+                // written into the frames the machine was running. It can go out now.
+                document.dispatchEvent(new Event('streamline:espresso-end'));
+            }
             // Plugin overlays that asked for it close when a shot starts (see `closeOnShot`).
             if (stateValue === 'espresso' && previousMachineState !== 'espresso') document.dispatchEvent(new Event('streamline:espresso-start'));
             // Keep the last frame so pages that need a live reading (the
@@ -2094,6 +2104,44 @@ export async function commitLedStrip() {
     return true;
 }
 
+// Bengle live preview: lights the strips at a colour WITHOUT storing it. The
+// four stored palette registers are untouched, so GET /machine/ledStrip never
+// reports a preview back -- preview state belongs to the page, not the machine.
+// It is also the only way to show an asleep colour on an awake machine, since
+// firmware applies a stored colour only when the machine is already in that
+// state.
+//
+// 404 means the connected machine is not a Bengle. That is a capability answer,
+// not a failure, so it comes back as false for the caller to hide the control
+// rather than as a thrown error.
+//
+// Each colour is exactly 12 hex characters (16-bit RRRRGGGGBBBB); anything else
+// is rejected with 400 before a machine-write slot is taken. Callers debounce:
+// on firmware older than Bengle#114 the live registers are not yet PERM_RW, so
+// every changed frame is a flash write.
+export async function previewLedStrip(colours) {
+    const response = await fetch(`${API_BASE_URL}/machine/ledStrip/preview`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(colours),
+    });
+    if (response.status === 404) return false;
+    if (!response.ok) throw new Error(`Failed to preview LED strip (status ${response.status})`);
+    return true;
+}
+
+// End the preview and put the stored palette back. Without this a preview
+// stands until the next sleep/wake transition, so every exit seam owes one.
+// 503 is Decaid saying it could not read the stored palette back; there is
+// nothing to retry from here and the next transition settles it, so it is
+// reported as false rather than thrown.
+export async function clearLedStripPreview() {
+    const response = await fetch(`${API_BASE_URL}/machine/ledStrip/preview/clear`, { method: 'POST' });
+    if (response.status === 404 || response.status === 503) return false;
+    if (!response.ok) throw new Error(`Failed to clear LED strip preview (status ${response.status})`);
+    return true;
+}
+
 export async function resetLedStrip() {
     const response = await fetch(`${API_BASE_URL}/machine/ledStrip/reset`, { method: 'POST' });
     if (!response.ok) throw new Error(`Failed to reset LED strip (status ${response.status})`);
@@ -2760,35 +2808,6 @@ export async function callPluginEndpoint(pluginId, endpoint, body, method = 'POS
     }
 }
 
-// Resolves { valid, error }. `error` is set only when the check itself failed
-// (server unreachable, TLS, plugin error) as opposed to bad credentials, so the
-// caller can say which. `serverUrl` is sent only for a non-default server --
-// an older plugin ignores it, so the caller must gate on plugin support first.
-export async function verifyVisualizerCredentials(username, password, serverUrl) {
-    try {
-        const body = { username, password };
-        if (serverUrl) body.serverUrl = serverUrl;
-        const response = await fetch(`${API_BASE_URL}/plugins/visualizer.reaplugin/verifyCredentials`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(body),
-        });
-        if (!response.ok) {
-            let detail = '';
-            try {
-                const err = await response.json();
-                detail = err?.detail || err?.error || '';
-            } catch { /* non-JSON error body */ }
-            return { valid: false, error: detail || `API Error: ${response.status}` };
-        }
-        const result = await response.json();
-        return { valid: result.valid === true, error: result.error || null };
-    } catch (error) {
-        logger.error('Failed to verify Visualizer credentials:', error.message);
-        return { valid: false, error: error.message || 'Connection failed' };
-    }
-}
-
 export async function getDisplayState() {
     try {
         const response = await fetch(`${API_BASE_URL}/display`);
@@ -2801,10 +2820,6 @@ export async function getDisplayState() {
         throw error;
     }
 }
-
-/** Brightness used while the machine sleeps when "screen off" is switched off.
- *  Dim enough to read as asleep, bright enough to see the screensaver. */
-const SAVER_BRIGHTNESS_DEFAULT = 10;
 
 /** Black screen saver: a full black cover at brightness 0 instead of the image
  *  screensaver. Mutually exclusive with it -- the settings toggles enforce that --
@@ -2823,8 +2838,27 @@ export function setBlackScreenSaver(enabled) {
     return !!enabled;
 }
 
+export function isCustomSaverBrightness() {
+    return localStorage.getItem(SAVER_BRIGHTNESS_CUSTOM_KEY) === 'true';
+}
+
+export function setCustomSaverBrightnessEnabled(enabled) {
+    localStorage.setItem(SAVER_BRIGHTNESS_CUSTOM_KEY, enabled ? 'true' : 'false');
+    return !!enabled;
+}
+
+export function setSaverBrightness(value) {
+    const level = resolveSaverBrightness({ custom: true, stored: value });
+    localStorage.setItem(SAVER_BRIGHTNESS_KEY, String(level));
+    return level;
+}
+
 export function getSaverBrightness() {
-    return isBlackScreenSaver() ? 0 : SAVER_BRIGHTNESS_DEFAULT;
+    if (isBlackScreenSaver()) return 0;
+    return resolveSaverBrightness(parseSaverBrightnessSetting(
+        localStorage.getItem(SAVER_BRIGHTNESS_CUSTOM_KEY),
+        localStorage.getItem(SAVER_BRIGHTNESS_KEY),
+    ));
 }
 
 export function dimDisplay() {

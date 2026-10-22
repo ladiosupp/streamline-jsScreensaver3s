@@ -1,4 +1,4 @@
-import { connectWebSocket, getWorkflow, connectScaleWebSocket, ensureGatewayModeTracking, reconnectingWebSocket, getDevices, reconnectDevice, scanForDevices,connectShotSettingsWebSocket, getDe1AdvancedSettings, updateShotSettingsCache, getDe1Settings, MachineState, getShotIds, getShots, getValueFromStore, verifyVisualizerCredentials, connectScaleDevice, tareScale, connectTimeToReadyWebSocket, connectShotStateWebSocket, sendDeviceCommand, saveScaleDeviceId, getScaleDeviceId, getDeviceWebSocket, initDeviceWebSocketWithCallback, connectDeviceWebSocket, connectDisplayWebSocket, restoreBrightnessFromStorage, getMachineInfo, getMachineState, setMachineState, getReaSettings, getAppInfo, getCachedRefillKitSetting, getSensors, connectSensorSnapshotWebSocket, closeSensorSnapshotWebSocket } from './api.js';
+import { connectWebSocket, getWorkflow, connectScaleWebSocket, ensureGatewayModeTracking, reconnectingWebSocket, getDevices, reconnectDevice, scanForDevices,connectShotSettingsWebSocket, getDe1AdvancedSettings, updateShotSettingsCache, getDe1Settings, MachineState, getShots, connectScaleDevice, tareScale, connectTimeToReadyWebSocket, connectShotStateWebSocket, sendDeviceCommand, saveScaleDeviceId, getScaleDeviceId, getDeviceWebSocket, initDeviceWebSocketWithCallback, connectDeviceWebSocket, connectDisplayWebSocket, restoreBrightnessFromStorage, getMachineInfo, getMachineState, setMachineState, getReaSettings, getAppInfo, getCachedRefillKitSetting, getSensors, connectSensorSnapshotWebSocket, closeSensorSnapshotWebSocket } from './api.js';
 import { initScaling } from './scaling.js';
 import * as chart from './chart.js';
 import * as ui from './ui.js';
@@ -24,16 +24,16 @@ import { resolveMilkProbePresence, MILK_PROBE_ABSENT_AFTER_MS, selectMilkProbeSe
 import { readTimeToReadyFrame, heatingSecondsLeft } from './heating-countdown.js';
 import { workflowTileValues, tilesToPaint, profileChanged, WORKFLOW_EDIT_GUARD_MS } from './workflow-watch.js';
 import { isCupWarmerOn, readCupWarmerTarget, resolvePrewarm, getCupWarmerState, setCupWarmerState, patchCupWarmerState, invalidateCupWarmerState, onCupWarmerStateChange, CUP_WARMER_TARGET_KEY } from './cup-warmer.js';
-import { openDB, setSetting } from './idb.js';
+import { openDB, getSetting, setSetting } from './idb.js';
 import { openContextMenu } from './context-menu.js';
 import { shouldHandleMachineShortcut } from './machine-shortcut.js';
 import { initEcoSteam, noteEcoSteamActivity } from './eco-steam.js';
 import { loadStyle } from './vendor-loader.js';
 import { loadECharts } from './echarts-loader.js';
 import { initHelpLauncher } from './help-launcher.js';
-import { clearDyeWorkflowContext } from './dyeStrip.js';
+import { noteClearContext } from './workflow-note.js';
 import { SLEEP_PROFILE_KEY, sleepProfileMark, shouldApplyWakeProfile } from './wake-profile.js';
-import { isVisualizerEnabled, isAutoUploadEnabled } from './visualizer.js';
+import { legacyKeysToPurge, LEGACY_VISUALIZER_PURGED_FLAG } from './legacy-credentials-purge.js';
 
 window.app = { api, ui, chart };
 
@@ -618,47 +618,6 @@ function isHeatingState(state, substate) {
     return state === MachineState.HEATING || (state === MachineState.IDLE && substate === 'preparingForShot');
 }
 
-async function pollForUploadConfirmation(shotId, timeout = 30000) {
-    // Only wait on a confirmation the plugin is actually going to produce: with
-    // auto-upload off, nothing uploads by itself and the poll would end in a
-    // "Upload to Visualizer Failed." toast after every shot.
-    if (!isAutoUploadEnabled()) {
-        logger.info('Visualizer auto-upload is off. Skipping upload confirmation for shot ID:', shotId);
-        return Promise.resolve(false); // Return resolved promise with false to indicate no upload happened
-    }
-    
-    logger.info(`Polling for upload confirmation for shot ID: ${shotId}`);
-    const pollInterval = 3000; // 3 seconds
-    const startTime = Date.now();
-
-    const checkUploadStatus = async (resolve, reject) => {
-        if (Date.now() - startTime > timeout) {
-            logger.warn(`Polling timed out for shot ${shotId}.`);
-            ui.showToast(`Upload to Visualizer Failed.`, 3000, 'error');
-            return reject(new Error('Polling timed out'));
-        }
-
-        try {
-            const lastUploadedShotId = await getValueFromStore('visualizer.reaplugin', 'lastUploadedShot');
-            logger.debug(`Polled lastUploadedShotId: ${lastUploadedShotId}`);
-
-            if (lastUploadedShotId === shotId) {
-                logger.info(`Successfully confirmed upload for shot ${shotId}.`);
-                ui.showToast('Shot uploaded successfully!', 3000, 'success');
-                return resolve(true);
-            } else {
-                setTimeout(() => checkUploadStatus(resolve, reject), pollInterval);
-            }
-        } catch (error) {
-            logger.error('Error during polling for upload confirmation:', error);
-            // Don't reject immediately, let it retry until timeout
-            setTimeout(() => checkUploadStatus(resolve, reject), pollInterval);
-        }
-    };
-
-    return new Promise(checkUploadStatus);
-}
-
 // Records the estimate only — handleData does the painting.
 function handleTimeToReadyData(data) {
     ttrHeating = readTimeToReadyFrame(data, Date.now(), ttrHeating);
@@ -970,31 +929,13 @@ function handleData(data) {
             // TIME is decided first.
             ui.showToast(fallbackStopToast(), 6000, 'info');
 
-            // Start polling for upload confirmation
-            setTimeout(async () => {
-                try {
-                    const shotIds = await getShotIds();
-                    if (shotIds && shotIds.length > 0) {
-                        const latestShotId = shotIds[shotIds.length - 1];
-                        pollForUploadConfirmation(latestShotId);
-                    } else {
-                        logger.warn('Could not get latest shot ID to confirm upload.');
-                    }
-                } catch (error) {
-                    logger.error('Failed to initiate upload polling:', error);
-                }
-            }, 2000); // Delay to ensure shot is saved on server
-
             // Capture the current newest id NOW (before the new shot lands) so
             // the refresh knows which record is the just-finished one to wait for.
             const previousNewestId = history.getNewestShotId();
             history.refreshToNewestShot(previousNewestId);
 
-            // The shot record has the workflow baked in by now, so the bean /
-            // barista / note identity in the live context has done its job —
-            // leave it there and it stamps every later shot too. DYE2 restates
-            // it per shot when the user means it (see dyeStrip.js).
-            clearDyeWorkflowContext();
+            // No context clear here: bean/barista identity persists across shots, and the
+            // per-shot note is cleared once, on the record-persisted frame below.
         })();
     }
 
@@ -1290,7 +1231,6 @@ let seqTrackedShot = false;   // sequencer emitted frames for the current shot
 let seqLastState = 'idle';
 let seqScaleLostWarned = false;
 let seqHistoryRefreshed = false;
-let seqUploadPolled = false;
 let seqStopToastShown = false; // a stop/abort/terminal toast fired for this shot
 
 // Reconstruct the stop toast from the finished shot. Used when no sequencer
@@ -1330,7 +1270,7 @@ function scheduleStopToastBackstop() {
     }, STOP_TOAST_BACKSTOP_MS);
 }
 
-// Refresh the history panel to the finished shot and confirm its upload.
+// Refresh the history panel to the finished shot.
 // Fired from stop/terminal AND finalize (first one wins): the feed replays
 // only its latest frame on reconnect, so a socket blip at shot end can
 // swallow the finalize frame — hanging the refresh on it alone left the
@@ -1339,10 +1279,6 @@ function seqRefreshHistory(shotId) {
     if (!seqHistoryRefreshed) {
         seqHistoryRefreshed = true;
         history.refreshToNewestShot(history.getNewestShotId(), 6, 2000, shotId ?? null);
-    }
-    if (shotId && !seqUploadPolled) {
-        seqUploadPolled = true;
-        pollForUploadConfirmation(shotId);
     }
 }
 
@@ -1445,7 +1381,6 @@ function handleShotStateEvent(frame) {
     if (active && (seqLastState === 'idle' || seqLastState === 'finished')) {
         seqScaleLostWarned = false;
         seqHistoryRefreshed = false;
-        seqUploadPolled = false;
         seqStopToastShown = false;
     }
     seqLastState = frame.state ?? seqLastState;
@@ -1502,9 +1437,12 @@ function handleShotStateEvent(frame) {
                 }).catch(error => logger.warn('Could not fetch actualYield for finalized shot:', error));
             }
             seqRefreshHistory(frame.shotId);
-            // Record persisted — the context it captured is now history, so clear
-            // it rather than let it label the next shot (see dyeStrip.js).
-            clearDyeWorkflowContext();
+            // Record persisted — the note it captured is now history; everything else in
+            // the context persists on purpose (see workflow-note.js).
+            getWorkflow().then(live => {
+                const clear = noteClearContext(live?.context);
+                return clear && api.updateWorkflow({ context: clear });
+            }).catch(error => logger.warn('Could not clear the shot note:', error));
             break;
         // advance frames: chart already tracks step changes via profileFrame
     }
@@ -2229,42 +2167,32 @@ async function initializeDe1Connection() {
     }
 }
 
-async function initVisualizer() {
-    if (!isVisualizerEnabled()) {
-        logger.info('Visualizer is disabled. Skipping initialization.');
-        return;
-    }
-    
-    logger.info('Initializing Visualizer connection...');
-    const username = localStorage.getItem('visualizerUsername');
-    const encodedPassword = localStorage.getItem('visualizerPassword');
+// A profile switch asked for during a shot is held rather than written into the
+// frames the machine is running (profile-send-gate.js). Send it when the shot
+// ends. Bound once: initMainPageOnce is the only caller.
+let pendingProfileSendBound = false;
+function bindPendingProfileSendFlush() {
+    if (pendingProfileSendBound) return;
+    pendingProfileSendBound = true;
+    document.addEventListener('streamline:espresso-end', () => {
+        import('./profileManager.js')
+            .then(m => m.flushPendingProfileSend())
+            .catch(err => logger.warn('Could not send the held profile:', err));
+    });
+}
 
-    if (username && encodedPassword) {
-        try {
-            const password = atob(encodedPassword); // Decode password
-            const { valid: isValid } = await verifyVisualizerCredentials(username, password);
-            if (isValid) {
-                logger.info('Saved Visualizer credentials are valid.');
-
-            } else {
-                logger.warn('Saved Visualizer credentials failed to validate. Please check your settings.');
-                // Clearing the invalid credentials
-                localStorage.removeItem('visualizerUsername');
-                localStorage.removeItem('visualizerPassword');
-            }
-        } catch (e) {
-            logger.error('Failed to decode or verify saved credentials', e);
-            // Clear potentially corrupted credentials
-            localStorage.removeItem('visualizerUsername');
-            localStorage.removeItem('visualizerPassword');
-        }
-    } else {
-        logger.info('No saved Visualizer credentials found.');
-    }
+// One-time removal of the Visualizer login the skin used to keep in
+// localStorage. Guarded by an IndexedDB flag so it runs once per device; the
+// flag is set only after the removals, so a failure retries on the next boot.
+async function purgeLegacyVisualizerCredentials() {
+    const keys = legacyKeysToPurge(await getSetting(LEGACY_VISUALIZER_PURGED_FLAG));
+    if (!keys.length) return;
+    for (const key of keys) localStorage.removeItem(key);
+    await setSetting(LEGACY_VISUALIZER_PURGED_FLAG, true);
 }
 
 // Resolves as soon as history.initHistory() has populated the shots array --
-// long before the rest of initMainPageOnce() (DE1 connect, visualizer, six+
+// long before the rest of initMainPageOnce() (DE1 connect, six+
 // websockets) finishes. The router awaits this alone to repaint the chart
 // ASAP on return from a sub-page, instead of blocking on unrelated work.
 let resolveHistoryReady;
@@ -2302,7 +2230,8 @@ async function initMainPageOnce() {
         resetDataTimeout();
         initMilkProbeSensorPolling();
         connectShotSettingsWebSocket(handleShotSettingsData);
-        void initVisualizer().catch(error => logger.error('Visualizer initialization failed:', error));
+        void purgeLegacyVisualizerCredentials().catch(() => {});
+        bindPendingProfileSendFlush();
         // Plugin-declared dashboard surfaces; a no-op when no plugin answers `skin`.
         import('./plugin-surfaces-ui.js').then(m => m.initPluginSurfaces())
             .catch(error => logger.warn('Plugin surfaces failed to start:', error));
