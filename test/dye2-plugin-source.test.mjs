@@ -363,7 +363,7 @@ function lift(module, patterns) {
         const fn = new Function('sessionStorage', 'openPluginOverlay', `${body}\nreturn editRecipe;`);
         const editRecipe = fn(
             { setItem: (k, v) => { store[k] = v; }, removeItem: (k) => { delete store[k]; } },
-            (page) => opened.push(page),
+            (page, params) => opened.push(params ? [page, params] : page),
         );
         return { editRecipe, store, opened };
     };
@@ -373,7 +373,7 @@ function lift(module, patterns) {
         editRecipe({ id: 'rcp_ab12' });
         assert.equal(store.dye_editRecipeId, 'rcp_ab12');
         assert.equal(store.dye_editRecipeIdx, undefined);
-        assert.deepEqual(opened, ['recipe-edit']);
+        assert.deepEqual(opened, [['recipe-edit', { id: 'rcp_ab12' }]]);
     });
 
     test('a legacy id "1" also sets index 0 and "5" index 4 for an older DYE2', () => {
@@ -391,6 +391,18 @@ function lift(module, patterns) {
         editRecipe({ id: '3', blank: true });
         assert.equal(store.dye_editRecipeId, undefined);
         assert.equal(store.dye_editRecipeIdx, '2');
+    });
+
+    test('a blank cell asks for a new recipe on that slot; a recipe passes its id in the URL', () => {
+        const { editRecipe, opened } = build();
+        editRecipe({ id: '3', blank: true });
+        editRecipe({ id: 'rcp_x' });
+        // ?slot is the cell that was tapped: without it DYE2 starts with no slot targeted and
+        // SAVE files the recipe in the library, leaving the cell blank. An older DYE2 ignores it.
+        assert.deepEqual(opened, [
+            ['recipe-edit', { new: 1, slot: '3' }],
+            ['recipe-edit', { id: 'rcp_x' }],
+        ]);
     });
 }
 

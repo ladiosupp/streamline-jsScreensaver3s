@@ -142,6 +142,38 @@ function openCellMenu(btn, edit, kind, item, slot) {
     ]);
 }
 
+// The strip's one source for "which item is selected, and has it drifted". DYE2's /selection
+// route derives that from the live workflow and the item's stored values on every call, so it
+// is correct the moment a record lands. The KV key `selection` is only a mirror, written when
+// the workflow changes: a record that rewrites the recipe without touching the workflow leaves
+// the mirror saying modified:true. So the route is read first and the mirror is a fallback
+// for a DYE2 without the route (`mirror:false` for callers that cannot afford a stale answer).
+// undefined = could not tell; null/{} = nothing selected.
+async function readSelection({ mirror = true } = {}) {
+    try {
+        const res = await fetch(`${PLUGIN_BASE}/selection`);
+        if (res.ok) return await res.json();
+    } catch (e) { /* fall through to the mirror */ }
+    if (!mirror) return undefined;
+    return getKVValue(DYE2_KV_NAMESPACE, 'selection').catch(() => undefined);
+}
+
+// Refresh activeItemId and activeModified TOGETHER from DYE2, so the highlight and the `*`
+// can never describe two different selections. A no-op while the skin's own legacy auto-save
+// is armed (DYE2 is not recording then; the `*` means nothing, so it is cleared). Never over a
+// tap or apply that landed during the GET. Returns true when the state was refreshed.
+async function syncSelection(opts) {
+    if (!dye2RecordsDialIn) return false;
+    if (activeItem) { activeModified = false; return false; }
+    const before = activeItemId;
+    const seq = applySeq;
+    const sel = await readSelection(opts);
+    if (sel === undefined || activeItemId !== before || applySeq !== seq) return false;
+    activeItemId = armedSelectionId(sel, { recipes: recipeCache, favs: favCache });
+    activeModified = selectionModified(sel, { recipes: recipeCache });
+    return true;
+}
+
 // Ask DYE2 to patch the selected item with the dial-in now on the machine. DYE2 owns the diff
 // (it knows what the item held when it was applied), so this just asks; it answers saved:false
 // when nothing actually moved.
@@ -157,11 +189,24 @@ async function saveChanges(kind, item, retried = false) {
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const body = await res.json().catch(() => null);
         if (body && body.saved) {
+            // DYE2 wrote the dial-in onto the item, so it now matches the live workflow: the
+            // `*` is stale. Cleared locally rather than re-read from DYE2's selection route
+            // (no extra round trip, and that route may not have caught up yet). Only on
+            // saved:true -- saved:false means nothing moved and the drift is still real.
+            activeModified = false;
             // The caches still hold the pre-save values; reapplying a cell would use them.
             await loadDyeStripData().catch(e => logger.warn('dyeStrip: reload after save failed', e));
+            // Then take DYE2's own answer, from the derived route only: the KV mirror may not
+            // have caught up and would bring the `*` straight back. If the route is
+            // unreachable the local clear above stands.
+            await syncSelection({ mirror: false }).catch(() => {});
             if (currentMode !== 'P') renderStrip(currentMode);
             showToast(`${label} updated`, 2000, 'info');
         } else {
+            // saved:false can mean "already saved" (an earlier save, or DYE2 itself, wrote the
+            // dial-in), so a lingering `*` is not proof of drift: take DYE2's derived answer.
+            await syncSelection({ mirror: false }).catch(() => {});
+            if (currentMode !== 'P') renderStrip(currentMode);
             showToast('No changes to save', 2000, 'info');
         }
     } catch (e) {
@@ -436,7 +481,11 @@ async function resolveFullProfile(stub) {
     if (!stub) return null;
     const id = typeof stub === 'string' ? stub : stub.id;
     if (!id) return null;
-    if (typeof stub === 'object' && Array.isArray(stub.steps)) return stub; // already full
+    // steps.length, not just Array.isArray: older DYE2 rows store the profile as
+    // { id, title, steps: [] }, and treating that as full PUTs a profile with no steps --
+    // the live curve keeps running under the recipe's name, which reads as "the recipe did
+    // not load". An empty array means the steps were never captured, so resolve by id.
+    if (typeof stub === 'object' && Array.isArray(stub.steps) && stub.steps.length) return stub; // already full
     try {
         const records = await getProfiles();
         const record = Array.isArray(records) ? records.find(r => r && r.id === id) : null;
@@ -644,8 +693,15 @@ function isSameOrigin(url) {
     }
 }
 
-export function openPluginOverlay(page) {
+// `params` adds query params (e.g. { id }) next to `return`. They travel in the URL because
+// sessionStorage is per-origin: in the cross-origin fallback below DYE2 cannot see ours.
+export function openPluginOverlay(page, params) {
     const pluginUrl = `${PLUGIN_BASE}/${page}`;
+    const query = (returnTo) => {
+        const q = new URLSearchParams({ return: returnTo });
+        for (const [k, v] of Object.entries(params || {})) q.set(k, String(v));
+        return q.toString();
+    };
     const ret = sentinelReturnUrl();
 
     // Cross-origin (dev): iframe would be blocked → full-page navigation instead.
@@ -658,7 +714,7 @@ export function openPluginOverlay(page) {
             if (parked) sessionStorage.setItem(SELECTION_KEY, parked);
             else sessionStorage.removeItem(SELECTION_KEY);
         } catch (e) { /* private mode: selection simply does not survive */ }
-        window.location.href = `${pluginUrl}?return=${encodeURIComponent(window.location.href)}`;
+        window.location.href = `${pluginUrl}?${query(window.location.href)}`;
         return;
     }
 
@@ -691,7 +747,7 @@ export function openPluginOverlay(page) {
         document.body.appendChild(overlay);
     }
     const frame = document.getElementById('dye-plugin-frame');
-    frame.src = `${pluginUrl}?return=${encodeURIComponent(ret)}`;
+    frame.src = `${pluginUrl}?${query(ret)}`;
     overlay.style.display = 'flex';
 }
 
@@ -707,11 +763,13 @@ function closePluginOverlay(refresh) {
 
 // Jump straight to DYE2's own recipe-edit screen for one recipe, instead of the
 // dashboard root. Current DYE2 opens a recipe by its opaque id (`dye_editRecipeId`);
-// a blank cell has no row, so the key is cleared and recipe-edit starts a new recipe
-// (its header tabs pick the slot). Older DYE2 builds read `dye_editRecipeIdx`, the
+// a blank cell has no row, so the key is cleared and recipe-edit starts a new recipe on
+// the slot that cell stands for (`?slot=`, honoured since DYE2 0.1.25 — an older build
+// ignores it and the recipe is saved to the library, as before). Older DYE2 builds read `dye_editRecipeIdx`, the
 // position of the recipe in a list of ids '1'..'5', so that key is still set when the
-// id has that shape (harmless to a newer DYE2). Same-origin only: in the cross-origin
-// dev fallback these keys live on a different origin than recipe-edit.
+// id has that shape (harmless to a newer DYE2). The sessionStorage keys only reach DYE2
+// when it shares our origin; the page is normally opened on the bridge origin, so the
+// real handoff is the URL: `?id=<recipeId>` opens that recipe, `?new=1` starts a blank one.
 function editRecipe(recipe) {
     try {
         if (recipe.blank) sessionStorage.removeItem('dye_editRecipeId');
@@ -720,7 +778,7 @@ function editRecipe(recipe) {
         if (String(recipe.id) === String(n) && n >= 1 && n <= 5) sessionStorage.setItem('dye_editRecipeIdx', String(n - 1));
         else sessionStorage.removeItem('dye_editRecipeIdx');
     } catch (e) { /* private mode */ }
-    openPluginOverlay('recipe-edit');
+    openPluginOverlay('recipe-edit', recipe.blank ? { new: 1, slot: recipe.id } : { id: recipe.id });
 }
 
 // Same idea for a favourite: jump to DYE2's own auto-fav-edit screen, which has
@@ -1030,6 +1088,8 @@ export function setStripMode(mode) {
         if (profileNav) profileNav.style.display = 'none';
         if (dyeStrip) dyeStrip.style.display = '';
         renderStrip(mode);
+        // DYE2 may have changed the selection or recorded onto it since the last redraw.
+        syncSelection().then(ok => { if (ok && currentMode === mode) renderStrip(mode); }).catch(() => {});
     }
 }
 
@@ -1107,14 +1167,7 @@ function wireOnce() {
             // DYE2 owns the arming: a selection cleared or changed inside it while this
             // page sat idle must not leave a stale highlight. Only when nothing is
             // armed here, and never over a tap that landed during the GET.
-            if (dye2RecordsDialIn && !activeItem) {
-                const before = activeItemId;
-                const seq = applySeq;
-                const sel = await getKVValue(DYE2_KV_NAMESPACE, 'selection').catch(() => undefined);
-                if (sel === undefined || activeItemId !== before || applySeq !== seq) return;
-                activeItemId = armedSelectionId(sel, { recipes: recipeCache, favs: favCache });
-                activeModified = selectionModified(sel, { recipes: recipeCache });
-            }
+            await syncSelection();
             if (currentMode !== 'P') renderStrip(currentMode);
         }).catch(() => {});
     };
@@ -1449,11 +1502,7 @@ async function restoreParkedSelection() {
     try { parkedRaw = sessionStorage.getItem(SELECTION_KEY); } catch (e) { /* private mode */ }
     if (dye2RecordsDialIn && !parkedRaw) {
         stripReturnParam();
-        const before = activeItemId;
-        const sel = await getKVValue(DYE2_KV_NAMESPACE, 'selection').catch(() => null);
-        if (activeItemId !== before) return; // a tap during the GET wins
-        activeItemId = armedSelectionId(sel, { recipes: recipeCache, favs: favCache });
-        activeModified = selectionModified(sel, { recipes: recipeCache });
+        await syncSelection(); // a tap during the GET wins
         if (currentMode !== 'P') renderStrip(currentMode);
         return;
     }
